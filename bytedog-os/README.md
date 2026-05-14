@@ -1,6 +1,8 @@
-# ByteDog OS — Handheld Launcher Foundation
+# ByteDog OS
 
-Status: Phase 1 complete. Phase 2 in progress.
+Status: v0.1.0 Phase 1 complete. Phase 2 in progress.
+
+License: MIT
 
 **ByteDog OS** is a **cyberpunk handheld launcher** for **Raspberry Pi 4** (and desktop dev), built with **Python** and **Pygame**. It is meant to feel like a **small console + hacker gadget**, not a Linux desktop or a generic emulator frontend. The mascot is **Chicha**, a dachshund.
 
@@ -209,9 +211,3 @@ Main menu hero art: **`assets/images/chicha-deck-bg.png`**. Menu row icons: matc
 ## What not to add yet (save for Phase 3+)
 
 Integrated RetroPie as a full product, real offensive security tooling, GPIO/touch drivers, cloud AI, heavy UI frameworks, and replacing the semantic input model.
-
----
-
-## License
-
-MIT
