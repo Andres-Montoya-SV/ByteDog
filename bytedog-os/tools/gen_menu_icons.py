@@ -14,10 +14,14 @@ OUT = ROOT / "assets" / "images"
 
 
 def retro(s: pygame.Surface) -> None:
+    """Handheld outline + simple screen grid (no face-like shapes)."""
     c = (220, 220, 235)
     pygame.draw.rect(s, c, pygame.Rect(12, 22, 40, 22), border_radius=4, width=2)
-    pygame.draw.circle(s, c, (22, 33), 5, width=2)
-    pygame.draw.circle(s, c, (42, 33), 5, width=2)
+    # Pixel grid on the "display"
+    px, py = 18, 28
+    for dx in (0, 8, 16, 24):
+        for dy in (0, 6):
+            pygame.draw.rect(s, c, pygame.Rect(px + dx, py + dy, 4, 4))
     pygame.draw.rect(s, c, pygame.Rect(28, 38, 8, 4), border_radius=1)
 
 

@@ -113,8 +113,6 @@ def draw_handheld_launcher(
     wifi: WifiStatus,
     battery_pct: int | None,
     *,
-    deck_hero: pygame.Surface | None,
-    deck_hero_alpha: int = 255,
     selection_pulse_s: float = 0.0,
     intro_slide_px: int = 0,
     chicha_life: ChichaLifeState = ChichaLifeState.IDLE,
@@ -165,23 +163,15 @@ def draw_handheld_launcher(
         selected = i == menu.selected_index
         if selected:
             pulse = 0.5 + 0.5 * math.sin(selection_pulse_s * math.tau * 0.85)
-            base_a = int(38 + 32 * pulse)
-            overlay = pygame.Surface((row_rect.w, row_rect.h), pygame.SRCALPHA)
-            overlay.fill((neon.r, neon.g, neon.b, min(120, base_a)))
-            surface.blit(overlay, row_rect.topleft)
-            glow_a = int(90 + 80 * pulse)
+            pygame.draw.rect(surface, theme.selection_bg, row_rect, border_radius=10)
+            pygame.draw.rect(surface, theme.accent_orange, row_rect, width=2, border_radius=10)
+            bar_h = max(12, row_rect.h - 14)
+            bar_w = 3 + int(2 * pulse)
             pygame.draw.rect(
                 surface,
-                pygame.Color(neon.r, neon.g, neon.b, min(220, glow_a)),
-                pygame.Rect(row_rect.x, row_rect.y, 5, row_rect.h),
+                neon,
+                pygame.Rect(row_rect.x + 4, row_rect.centery - bar_h // 2, bar_w, bar_h),
                 border_radius=2,
-            )
-            caret = int(3 + 2 * math.sin(selection_pulse_s * math.tau * 1.2))
-            cr = pygame.Rect(row_rect.x + 10 + caret, row_rect.centery - 6, 10, 12)
-            pygame.draw.polygon(
-                surface,
-                theme.accent_orange,
-                [(cr.left, cr.centery), (cr.right, cr.top), (cr.right, cr.bottom)],
             )
 
         icon = menu_icons.get(item.action)
@@ -217,22 +207,12 @@ def draw_handheld_launcher(
             pygame.draw.line(
                 surface,
                 pygame.Color(35, 30, 55),
-                (layout.text_left_x + slide, sep_y),
+                (layout.menu_area.x + slide + 6, sep_y),
                 (layout.menu_area.right - 6 + slide, sep_y),
                 1,
             )
 
-    inner = layout.chicha_rect.inflate(-10, -10)
-    if deck_hero is not None and deck_hero_alpha > 0:
-        if deck_hero_alpha >= 255:
-            surface.blit(deck_hero, inner.topleft)
-        else:
-            ghost = deck_hero.copy()
-            ghost.set_alpha(deck_hero_alpha)
-            surface.blit(ghost, inner.topleft)
-    elif deck_hero is None:
-        pygame.draw.rect(surface, theme.bg_panel, inner, border_radius=10)
-        pygame.draw.rect(surface, theme.border, inner, width=1, border_radius=10)
+    # Chicha pose is drawn in the hero rect by the app (no separate deck PNG underneath).
 
     pygame.draw.rect(surface, theme.bg_panel, layout.flavor, border_radius=8)
     pygame.draw.rect(surface, theme.border, layout.flavor, width=1, border_radius=8)

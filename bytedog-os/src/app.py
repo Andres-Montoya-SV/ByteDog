@@ -31,8 +31,10 @@ from src.ui.ambient_motes import AmbientMotes
 from src.ui.screens import (
     LayoutMetrics,
     compute_layout,
+    draw_confirm_action_dialog,
     draw_launcher_background,
     draw_overlay_message,
+    draw_quit_confirm_dialog,
     draw_status_bar_lines,
     finalize_frame_effects,
     measure_wrapped_status_bar,
@@ -54,10 +56,8 @@ def load_config(root: Path) -> dict[str, Any]:
         "fps": 60,
         "paths": {"assets": "assets", "data": "data"},
         "chicha": {
-            "default_fps": 8.0,
             "sleep_after_idle_ms": 120_000.0,
             "nav_happy_ms": 650.0,
-            "clip_blend_ms": 160.0,
             "low_battery_threshold_pct": 15,
             "reactive_to_navigation": True,
             "clip_names": (
@@ -70,16 +70,7 @@ def load_config(root: Path) -> dict[str, Any]:
                 "gaming",
                 "low_battery",
             ),
-            "clips": {
-                "idle": {"fps": 8.0},
-                "happy": {"fps": 10.0},
-                "sleep": {"fps": 6.0},
-                "alert": {"fps": 12.0},
-                "booting": {"fps": 10.0},
-                "curious": {"fps": 9.0},
-                "gaming": {"fps": 11.0},
-                "low_battery": {"fps": 7.0},
-            },
+            "clips": {},
         },
         "audio": {
             "master_volume": 1.0,
@@ -228,7 +219,7 @@ class ByteDogApp:
         self._theme = default_theme()
         self._menu = LauncherMenu()
         self._audio = AudioService(self._assets / "sounds")
-        self._chicha_visuals = ChichaVisuals(clips={})
+        self._chicha_visuals = ChichaVisuals(images={})
         self._chicha_animator = ChichaAnimator(self._chicha_visuals)
         self._chicha_animator.configure_ambient(self._chicha_cfg)
 
@@ -258,11 +249,14 @@ class ByteDogApp:
 
         self._screen_mode = "launcher"
         self._menu_icons: Optional[MenuIconCache] = None
-        self._deck_hero_source: Optional[pygame.Surface] = None
-        self._deck_hero_scaled: Optional[pygame.Surface] = None
-        self._deck_hero_scale_key: Optional[tuple[int, int, bool]] = None
+        self._settings_chicha_loaded: bool = False
+        self._settings_chicha_source: Optional[pygame.Surface] = None
+        self._settings_chicha_scaled: Optional[pygame.Surface] = None
+        self._settings_chicha_scale_key: Optional[tuple[int, int, bool]] = None
         self._shutdown_started_at: float = 0.0
         self._shutdown_wait_ms: int = 0
+        self._quit_confirm_active: bool = False
+        self._shutdown_confirm_active: bool = False
         self._wire_menu()
 
     def _wire_menu(self) -> None:
@@ -273,7 +267,7 @@ class ByteDogApp:
                 MenuAction.CHICHA: lambda: self._set_overlay("Chicha care screen is coming soon."),
                 MenuAction.TERMINAL: lambda: self._set_overlay("Terminal bridge is not wired in Phase 1."),
                 MenuAction.SETTINGS: self._open_settings,
-                MenuAction.SHUTDOWN: self._shutdown,
+                MenuAction.SHUTDOWN: lambda: None,
             }
         )
 
@@ -467,7 +461,13 @@ class ByteDogApp:
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    running = False
+                    if self._screen_mode == "shutdown":
+                        running = False
+                    elif not self._quit_confirm_active:
+                        self._shutdown_confirm_active = False
+                        self._quit_confirm_active = True
+                    # While the quit dialog is open, ignore further close events until
+                    # the user chooses stay (Esc/B) or quit (Enter/A).
                     break
                 if self._screen_mode == "shutdown":
                     continue
@@ -531,6 +531,46 @@ class ByteDogApp:
         """Return False to stop the main loop."""
         if self._screen_mode == "shutdown":
             return True
+        if self._quit_confirm_active:
+            for intent in intents:
+                self._debug_last_action = intent.name
+                if intent is InputAction.TOGGLE_DEBUG:
+                    self._show_input_debug_overlay = not self._show_input_debug_overlay
+                    continue
+                if intent in (InputAction.CONFIRM, InputAction.EXIT):
+                    if self._screen_mode == "settings":
+                        self._save_prefs()
+                    self._audio.play_confirm()
+                    return False
+                if intent is InputAction.BACK:
+                    self._audio.play_back()
+                    self._quit_confirm_active = False
+                    self._shutdown_confirm_active = False
+            return True
+
+        if self._shutdown_confirm_active:
+            for intent in intents:
+                self._debug_last_action = intent.name
+                if intent is InputAction.TOGGLE_DEBUG:
+                    self._show_input_debug_overlay = not self._show_input_debug_overlay
+                    continue
+                if intent is InputAction.CONFIRM:
+                    self._audio.play_confirm()
+                    self._shutdown_confirm_active = False
+                    self._shutdown()
+                    return True
+                if intent in (
+                    InputAction.BACK,
+                    InputAction.EXIT,
+                    InputAction.MENU_UP,
+                    InputAction.MENU_DOWN,
+                    InputAction.MENU_LEFT,
+                    InputAction.MENU_RIGHT,
+                ):
+                    self._audio.play_back()
+                    self._shutdown_confirm_active = False
+            return True
+
         for intent in intents:
             self._debug_last_action = intent.name
             if intent is InputAction.TOGGLE_DEBUG:
@@ -540,7 +580,9 @@ class ByteDogApp:
             if self._screen_mode == "settings":
                 rows = list(SettingsRow)
                 if intent is InputAction.EXIT:
-                    return False
+                    self._shutdown_confirm_active = False
+                    self._quit_confirm_active = True
+                    continue
                 if intent is InputAction.BACK:
                     self._audio.play_back()
                     self._chicha_animator.notify_activity()
@@ -578,14 +620,18 @@ class ByteDogApp:
                 continue
 
             if intent is InputAction.EXIT:
-                return False
+                self._shutdown_confirm_active = False
+                self._quit_confirm_active = True
+                continue
             if intent is InputAction.BACK:
                 self._audio.play_back()
                 self._chicha_animator.notify_activity()
                 if self._overlay_message:
                     self._overlay_message = None
                     continue
-                return False
+                self._shutdown_confirm_active = False
+                self._quit_confirm_active = True
+                continue
 
             if self._overlay_message:
                 if intent is InputAction.CONFIRM:
@@ -617,7 +663,11 @@ class ByteDogApp:
             elif intent is InputAction.CONFIRM:
                 self._audio.play_confirm()
                 self._chicha_animator.notify_activity()
-                self._menu.activate()
+                if self._menu.selected.action is MenuAction.SHUTDOWN:
+                    self._quit_confirm_active = False
+                    self._shutdown_confirm_active = True
+                else:
+                    self._menu.activate()
         return True
 
     def _controller_names_summary(self) -> str:
@@ -631,29 +681,35 @@ class ByteDogApp:
         joined = ", ".join(parts)
         return joined[:80] if joined else "(none)"
 
-    def _scaled_deck_hero(self, w: int, h: int, fast: bool) -> Optional[pygame.Surface]:
-        """Static hero art for the launcher (`assets/images/chicha-deck-bg.png`)."""
+    def _scaled_settings_chicha_corner(self, w: int, h: int, fast: bool) -> Optional[pygame.Surface]:
+        """Static Chicha art for the settings header (`assets/images` PNGs)."""
         if w <= 0 or h <= 0:
             return None
-        path = self._assets / "images" / "chicha-deck-bg.png"
-        if not path.is_file():
+        if not self._settings_chicha_loaded:
+            self._settings_chicha_loaded = True
+            images = self._assets / "images"
+            for name in ("chicha-settings.png", "chicha.png"):
+                path = images / name
+                if not path.is_file():
+                    continue
+                try:
+                    img = pygame.image.load(str(path))
+                    try:
+                        img = img.convert_alpha()
+                    except pygame.error:
+                        pass
+                    self._settings_chicha_source = img
+                    break
+                except (pygame.error, OSError, ValueError):
+                    continue
+        if self._settings_chicha_source is None:
             return None
         key = (w, h, fast)
-        if self._deck_hero_scale_key == key and self._deck_hero_scaled is not None:
-            return self._deck_hero_scaled
-        if self._deck_hero_source is None:
-            try:
-                img = pygame.image.load(str(path))
-                try:
-                    img = img.convert_alpha()
-                except pygame.error:
-                    pass
-                self._deck_hero_source = img
-            except (pygame.error, OSError, ValueError):
-                return None
-        self._deck_hero_scaled = scale_surface(self._deck_hero_source, (w, h), fast)
-        self._deck_hero_scale_key = key
-        return self._deck_hero_scaled
+        if self._settings_chicha_scale_key == key and self._settings_chicha_scaled is not None:
+            return self._settings_chicha_scaled
+        self._settings_chicha_scaled = scale_surface(self._settings_chicha_source, (w, h), fast)
+        self._settings_chicha_scale_key = key
+        return self._settings_chicha_scaled
 
     def _prepare_status_bar(
         self, layout: LayoutMetrics, sw: int, sh: int
@@ -734,10 +790,19 @@ class ByteDogApp:
             )
             margin = max(20, min(sw, sh) // 28)
             mini = pygame.Rect(sw - margin - 138, margin + 56, 118, 92)
-            self._chicha_animator.draw(surface, mini, fast_scale=fast_scale, now_s=time.monotonic())
+            corner = self._scaled_settings_chicha_corner(mini.w, mini.h, fast_scale)
+            if corner is not None:
+                surface.blit(corner, corner.get_rect(center=mini.center))
             self._draw_status_overlay_scanlines_debug(
                 surface, layout, sw, sh, status_prepared=status_prepared
             )
+            if self._quit_confirm_active:
+                draw_quit_confirm_dialog(
+                    surface,
+                    self._theme,
+                    title_font_size=max(20, layout.menu_size),
+                    hint_font_size=max(15, layout.menu_size - 4),
+                )
             return
 
         hl = compute_handheld_main_layout(sw, sh, len(self._menu.items))
@@ -745,13 +810,10 @@ class ByteDogApp:
         icon_surfaces = {action: self._menu_icons.get(action) for action in MenuAction}
         fast_scale = bool(self._performance.get("chicha_fast_scale", False))
         inner = hl.chicha_rect.inflate(-10, -10)
-        deck_hero = self._scaled_deck_hero(inner.width, inner.height, fast_scale)
         intro_elapsed = max(0.0, time.monotonic() - self._launcher_entered_mono)
         intro_t = min(1.0, intro_elapsed / 0.42)
         intro_ease = intro_t * intro_t * (3.0 - 2.0 * intro_t)
         intro_slide = int((1.0 - intro_ease) * 36)
-        has_chicha = bool(self._chicha_visuals.clips)
-        deck_alpha = 105 if has_chicha else 255
         draw_handheld_launcher(
             surface,
             self._theme,
@@ -760,8 +822,6 @@ class ByteDogApp:
             icon_surfaces,
             wifi_service.get_wifi_status(),
             battery_service.read_battery_percent(),
-            deck_hero=deck_hero,
-            deck_hero_alpha=deck_alpha,
             selection_pulse_s=time.monotonic(),
             intro_slide_px=intro_slide,
             chicha_life=self._chicha_animator.life_state,
@@ -776,6 +836,26 @@ class ByteDogApp:
             draw_overlay_message(surface, self._theme, self._overlay_message, layout.menu_size)
 
         finalize_frame_effects(surface, self._scanlines, self._theme)
+
+        if self._shutdown_confirm_active:
+            draw_confirm_action_dialog(
+                surface,
+                self._theme,
+                title="¿Apagar el sistema?",
+                confirm_hint="Enter o botón A · apagar",
+                cancel_hint="Esc o botón B · cancelar",
+                title_font_size=max(20, layout.menu_size),
+                hint_font_size=max(15, layout.menu_size - 4),
+                border_color=self._theme.danger,
+            )
+
+        if self._quit_confirm_active:
+            draw_quit_confirm_dialog(
+                surface,
+                self._theme,
+                title_font_size=max(20, layout.menu_size),
+                hint_font_size=max(15, layout.menu_size - 4),
+            )
 
         if self._show_input_debug_overlay:
             lines = self._build_input_debug_overlay_lines()

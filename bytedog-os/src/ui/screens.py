@@ -215,6 +215,71 @@ def draw_overlay_message(
         surface.blit(surf, (x, y))
 
 
+def draw_confirm_action_dialog(
+    surface: pygame.Surface,
+    theme: Theme,
+    *,
+    title: str,
+    confirm_hint: str,
+    cancel_hint: str,
+    title_font_size: int,
+    hint_font_size: int,
+    border_color: pygame.Color | None = None,
+) -> None:
+    """Dim the frame and show a two-choice modal (drawn after gameplay UI, before scanlines)."""
+    sw, sh = surface.get_size()
+    veil = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    veil.fill((8, 6, 18, 188))
+    surface.blit(veil, (0, 0))
+
+    border = border_color if border_color is not None else theme.accent_orange
+    title_font = load_ui_font(title_font_size)
+    hint_font = load_ui_font(hint_font_size)
+    title_s = title_font.render(title, True, theme.text_primary)
+    hints = (
+        hint_font.render(confirm_hint, True, theme.text_dim),
+        hint_font.render(cancel_hint, True, theme.text_dim),
+    )
+    line_gap = 6
+    pad_x, pad_y = 32, 26
+    hints_h = sum(h.get_height() for h in hints) + line_gap * max(0, len(hints) - 1)
+    inner_w = max(title_s.get_width(), max(h.get_width() for h in hints))
+    inner_h = title_s.get_height() + line_gap + 4 + hints_h
+    box_w = min(sw - 36, inner_w + pad_x * 2)
+    box_h = min(sh - 36, inner_h + pad_y * 2)
+    box = pygame.Rect(0, 0, box_w, box_h)
+    box.center = (sw // 2, sh // 2)
+    pygame.draw.rect(surface, theme.bg_panel, box, border_radius=12)
+    pygame.draw.rect(surface, border, box, width=2, border_radius=12)
+
+    y = box.y + pad_y
+    surface.blit(title_s, (box.centerx - title_s.get_width() // 2, y))
+    y += title_s.get_height() + line_gap + 4
+    for i, h in enumerate(hints):
+        surface.blit(h, (box.centerx - h.get_width() // 2, y))
+        y += h.get_height()
+        if i < len(hints) - 1:
+            y += line_gap
+
+
+def draw_quit_confirm_dialog(
+    surface: pygame.Surface,
+    theme: Theme,
+    *,
+    title_font_size: int,
+    hint_font_size: int,
+) -> None:
+    draw_confirm_action_dialog(
+        surface,
+        theme,
+        title="Quit ByteDog OS?",
+        confirm_hint="Enter or A button · quit",
+        cancel_hint="Esc or B button · stay",
+        title_font_size=title_font_size,
+        hint_font_size=hint_font_size,
+    )
+
+
 def wrap_text_to_width(font: pygame.font.Font, text: str, max_width: int) -> list[str]:
     """Word-wrap using glyph width so lines fit inside the dialog inner width."""
     stripped = text.strip()
