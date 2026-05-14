@@ -4,5 +4,9 @@
     "chicha_fast_scale": false,
     "system_poll_sec": 1.0,
     "ambient_mote_count": 10
+  },
+  "transitions": {
+    "enabled": true,
+    "launcher_intro_fade_ms": 380
   }
 }

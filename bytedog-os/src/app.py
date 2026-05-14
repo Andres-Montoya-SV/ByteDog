@@ -1,4 +1,4 @@
-"""Pygame application shell for ByteDog OS Phase 1."""
+"""Pygame application shell for ByteDog OS (Phase 1 shell + Phase 2 polish)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from src.config.loader import load_merged_config
 from src.core.lifecycle import quit_pygame_display, shutdown_mixer_if_any
 from src.core.timing import update_frame_timing
 from src.pet.animations import ChichaAnimator, ChichaVisuals, scale_surface
+from src.pet.behavior import ChichaBehaviorEngine
+from src.pet.mood import ChichaMood
 from src.pet.state import PetState
 from src.services import battery as battery_service
 from src.services import emulator as emulator_service
@@ -49,6 +51,7 @@ from src.ui.debug_overlay import (
 from src.ui.settings_screen import SettingsDisplayInfo, SettingsRow, draw_settings_screen
 from src.ui.shutdown_screen import draw_shutdown_screen
 from src.ui.theme import ScanlineOverlay, default_theme
+from src.ui.transitions import BlackVeilCache, FadeTimer
 
 
 def project_root() -> Path:
@@ -72,6 +75,7 @@ class ByteDogApp:
         self._fps = int(config.get("fps", 60))
         self._chicha_cfg: dict[str, Any] = config.get("chicha", {}) or {}
         self._performance: dict[str, Any] = config.get("performance", {}) or {}
+        self._ui_cfg: dict[str, Any] = config.get("ui") or {}
 
         paths = config.get("paths", {}) or {}
         self._assets = root / str(paths.get("assets", "assets"))
@@ -109,7 +113,8 @@ class ByteDogApp:
         self._theme = default_theme()
         self._menu = LauncherMenu()
         self._audio = AudioService(self._assets / "sounds")
-        self._chicha_visuals = ChichaVisuals(images={})
+        self._chicha_behavior = ChichaBehaviorEngine(self._chicha_cfg, audio=self._audio)
+        self._chicha_visuals = ChichaVisuals.empty()
         self._chicha_animator = ChichaAnimator(self._chicha_visuals)
         self._chicha_animator.configure_ambient(self._chicha_cfg)
 
@@ -117,6 +122,14 @@ class ByteDogApp:
         self._settings_row = SettingsRow.SFX
         self._gaming_until_mono = 0.0
         self._launcher_entered_mono = 0.0
+        t_cfg = self._ui_cfg.get("transitions") or {}
+        self._transitions_enabled = bool(t_cfg.get("enabled", True))
+        self._launcher_intro_fade_ms = max(0.0, float(t_cfg.get("launcher_intro_fade_ms", 380.0)))
+        self._intro_fade = FadeTimer(self._launcher_intro_fade_ms)
+        self._intro_veil = BlackVeilCache()
+        self._menu_cursor_cy: float | None = None
+        self._settings_opened_mono = 0.0
+        self._launcher_intro_done = True
         self._battery_warned = False
         self._overlay_message: Optional[str] = None
         self._last_frame_dt_ms: float = 16.7
@@ -163,6 +176,7 @@ class ByteDogApp:
 
     def _open_settings(self) -> None:
         self._settings_row = SettingsRow.SFX
+        self._settings_opened_mono = time.monotonic()
         self._screen_mode = "settings"
 
     def _close_settings(self) -> None:
@@ -188,6 +202,12 @@ class ByteDogApp:
             return
         if random.random() < 0.055:
             self._audio.play_chicha_ack()
+
+    def _maybe_chicha_react_sound(self) -> None:
+        if not self._ui_prefs.sfx_enabled:
+            return
+        if random.random() < 0.14:
+            self._audio.play_chicha_react()
 
     def _set_overlay(self, message: str) -> None:
         self._overlay_message = message
@@ -341,6 +361,11 @@ class ByteDogApp:
         self._menu_icons.preload(self._theme.accent_purple)
 
         self._launcher_entered_mono = time.monotonic()
+        self._menu_cursor_cy = None
+        self._launcher_intro_done = not (
+            self._transitions_enabled and self._launcher_intro_fade_ms > 0.5
+        )
+        self._intro_fade.reset()
 
         running = True
         while running:
@@ -401,6 +426,7 @@ class ByteDogApp:
                 self._chicha_animator.set_battery_percent(batt)
                 self._chicha_animator.set_gaming_mode(time.monotonic() < self._gaming_until_mono)
                 self._chicha_animator.update(dt_ms, self._pet)
+                self._chicha_behavior.tick(dt_ms, self._pet, self._chicha_animator)
                 self._maybe_low_battery_warning(batt)
             self._render_frame()
             pygame.display.flip()
@@ -490,6 +516,8 @@ class ByteDogApp:
                     self._chicha_animator.notify_menu_navigated()
                 elif intent is InputAction.CONFIRM:
                     self._audio.play_confirm()
+                    self._chicha_behavior.on_confirm(self._chicha_animator)
+                    self._maybe_chicha_react_sound()
                     row = self._settings_row
                     if row is SettingsRow.SFX:
                         self._ui_prefs.sfx_enabled = not self._ui_prefs.sfx_enabled
@@ -525,7 +553,8 @@ class ByteDogApp:
             if self._overlay_message:
                 if intent is InputAction.CONFIRM:
                     self._audio.play_confirm()
-                    self._chicha_animator.notify_activity()
+                    self._chicha_behavior.on_confirm(self._chicha_animator)
+                    self._maybe_chicha_react_sound()
                     self._overlay_message = None
                 continue
 
@@ -552,6 +581,9 @@ class ByteDogApp:
             elif intent is InputAction.CONFIRM:
                 self._audio.play_confirm()
                 self._chicha_animator.notify_activity()
+                if self._menu.selected.action is not MenuAction.SHUTDOWN:
+                    self._chicha_behavior.on_confirm(self._chicha_animator)
+                    self._maybe_chicha_react_sound()
                 if self._menu.selected.action is MenuAction.SHUTDOWN:
                     self._quit_confirm_active = False
                     self._shutdown_confirm_active = True
@@ -661,6 +693,13 @@ class ByteDogApp:
             status_prepared = self._prepare_status_bar(layout, sw, sh)
             _, status_rect, _ = status_prepared
             fast_scale = bool(self._performance.get("chicha_fast_scale", False))
+            mood = ChichaMood.from_life_state(self._chicha_animator.life_state).value
+            nframes = self._chicha_animator.current_frame_count()
+            anim_s = (
+                "vector fallback"
+                if self._chicha_animator.uses_placeholder_draw()
+                else (f"{nframes} frame strip" if nframes > 1 else "static sprite")
+            )
             draw_settings_screen(
                 surface,
                 self._theme,
@@ -671,10 +710,14 @@ class ByteDogApp:
                     fps_target=self._fps,
                     audio_ready=self._audio.mixer_ready,
                     input_debug=self._input_debug,
+                    chicha_live_mood=mood,
+                    chicha_clip=self._chicha_animator.current_clip_name,
+                    chicha_anim=anim_s,
+                    phase2_line="Phase 2 · polish + life",
                 ),
                 self._ui_prefs,
                 self._settings_row,
-                time.monotonic(),
+                max(0.0, time.monotonic() - self._settings_opened_mono),
                 content_bottom_y=status_rect.top,
             )
             margin = max(20, min(sw, sh) // 28)
@@ -703,6 +746,17 @@ class ByteDogApp:
         intro_t = min(1.0, intro_elapsed / 0.42)
         intro_ease = intro_t * intro_t * (3.0 - 2.0 * intro_t)
         intro_slide = int((1.0 - intro_ease) * 36)
+        target_cy = (
+            hl.menu_area.y
+            + self._menu.selected_index * hl.row_height
+            + hl.row_height // 2
+            + intro_slide
+        )
+        dt_s = self._last_frame_dt_ms * 0.001
+        if self._menu_cursor_cy is None:
+            self._menu_cursor_cy = float(target_cy)
+        else:
+            self._menu_cursor_cy += (target_cy - self._menu_cursor_cy) * min(1.0, dt_s * 20.0)
         draw_handheld_launcher(
             surface,
             self._theme,
@@ -714,6 +768,7 @@ class ByteDogApp:
             selection_pulse_s=time.monotonic(),
             intro_slide_px=intro_slide,
             chicha_life=self._chicha_animator.life_state,
+            selection_row_center_y=int(self._menu_cursor_cy),
         )
 
         self._ambient_motes.resize(inner.w, inner.h)
@@ -723,6 +778,12 @@ class ByteDogApp:
 
         if self._overlay_message:
             draw_overlay_message(surface, self._theme, self._overlay_message, layout.menu_size)
+
+        if not self._launcher_intro_done:
+            alpha = int(self._intro_fade.update(self._last_frame_dt_ms, active=True))
+            if alpha <= 1:
+                self._launcher_intro_done = True
+            self._intro_veil.blit_fade(surface, alpha=alpha)
 
         finalize_frame_effects(surface, self._scanlines, self._theme)
 

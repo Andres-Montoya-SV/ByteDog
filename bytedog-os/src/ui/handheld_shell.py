@@ -35,7 +35,7 @@ def compute_handheld_main_layout(sw: int, sh: int, num_menu_items: int) -> Handh
     card = pygame.Rect(outer, outer, sw - 2 * outer, sh - 2 * outer)
     top_h = max(34, min(44, sh // 11))
     flavor_h = max(38, min(48, sh // 10))
-    pad = 10
+    pad = 12
     content_top = card.y + top_h + pad
     content_bottom = card.bottom - flavor_h - pad
     content = pygame.Rect(card.x + pad, content_top, card.w - 2 * pad, max(80, content_bottom - content_top))
@@ -51,7 +51,7 @@ def compute_handheld_main_layout(sw: int, sh: int, num_menu_items: int) -> Handh
 
     icon_size = max(32, min(44, sh // 12))
     usable_h = content.h - 8
-    row_height = max(52, min(76, usable_h // max(num_menu_items, 1)))
+    row_height = max(52, min(78, usable_h // max(num_menu_items, 1)))
 
     text_left_x = menu_area.x + 8 + icon_size + 12
     top_bar = pygame.Rect(card.x + pad, card.y + 6, card.w - 2 * pad, top_h - 6)
@@ -116,6 +116,7 @@ def draw_handheld_launcher(
     selection_pulse_s: float = 0.0,
     intro_slide_px: int = 0,
     chicha_life: ChichaLifeState = ChichaLifeState.IDLE,
+    selection_row_center_y: int | None = None,
 ) -> None:
     slide = max(-24, min(48, intro_slide_px))
 
@@ -167,10 +168,12 @@ def draw_handheld_launcher(
             pygame.draw.rect(surface, theme.accent_orange, row_rect, width=2, border_radius=10)
             bar_h = max(12, row_rect.h - 14)
             bar_w = 3 + int(2 * pulse)
+            bar_cy = row_rect.centery if selection_row_center_y is None else selection_row_center_y
+            bar_cy = max(row_rect.top + bar_h // 2, min(row_rect.bottom - bar_h // 2, bar_cy))
             pygame.draw.rect(
                 surface,
                 neon,
-                pygame.Rect(row_rect.x + 4, row_rect.centery - bar_h // 2, bar_w, bar_h),
+                pygame.Rect(row_rect.x + 4, bar_cy - bar_h // 2, bar_w, bar_h),
                 border_radius=2,
             )
 

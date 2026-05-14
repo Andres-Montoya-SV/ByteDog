@@ -7,8 +7,9 @@ from typing import Final, Optional
 
 import pygame
 
-# Relative to assets/sounds/ — preferred first.
+# Relative to assets/sounds/ — preferred first (Phase 2 flat names + legacy paths).
 _NAVIGATION_MENU_CHANGE: Final[tuple[str, ...]] = (
+    "move.wav",
     "navigation/menu-change.mp3",
     "navigation/menu-change.wav",
     "menu-change.mp3",
@@ -16,6 +17,7 @@ _NAVIGATION_MENU_CHANGE: Final[tuple[str, ...]] = (
     "menu_move.wav",
 )
 _SYSTEM_STARTUP: Final[tuple[str, ...]] = (
+    "startup.wav",
     "system/startup.mp3",
     "system/startup.wav",
     "startup.mp3",
@@ -30,6 +32,7 @@ _SYSTEM_SHUTDOWN: Final[tuple[str, ...]] = (
     "shutdown.wav",
 )
 _ACTION_CONFIRM: Final[tuple[str, ...]] = (
+    "confirm.wav",
     "actions/selected-item.mp3",
     "actions/selected-item.wav",
     "selected-item.mp3",
@@ -40,18 +43,21 @@ _ACTION_CONFIRM: Final[tuple[str, ...]] = (
     "confirm.mp3",
 )
 _ACTION_BACK: Final[tuple[str, ...]] = (
+    "back.wav",
     "actions/back.wav",
     "actions/back.mp3",
     "back.wav",
     "back.mp3",
 )
 _SYSTEM_WARNING: Final[tuple[str, ...]] = (
+    "warning.wav",
     "system/warning.mp3",
     "system/warning.wav",
     "actions/warning.wav",
     "actions/warning.mp3",
 )
 _CHICHA_ACK: Final[tuple[str, ...]] = (
+    "chicha_react.wav",
     "chicha/ack.wav",
     "chicha/ack.mp3",
     "chicha/yip.wav",
@@ -181,6 +187,10 @@ class AudioService:
 
     def play_warning(self) -> None:
         self._play(self._system_warning)
+
+    def play_chicha_react(self) -> None:
+        """Short mascot acknowledgment (placeholder path: ``chicha_react.wav``)."""
+        self.play_chicha_ack()
 
     def play_chicha_ack(self) -> None:
         self._play(self._chicha_ack)

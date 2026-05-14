@@ -1,10 +1,10 @@
-# ByteDog OS — Phase 1 + Phase 2 foundation
+# ByteDog OS — Phase 1 complete · Phase 2 in progress
 
 **ByteDog OS** is a **cyberpunk handheld launcher** for **Raspberry Pi 4** (and desktop dev), built with **Python** and **Pygame**. It is meant to feel like a **small console + hacker gadget**, not a Linux desktop or a generic emulator frontend. The mascot is **Chicha**, a dachshund.
 
-Phase 1 delivers a **stable launcher shell**: semantic input (keyboard + SDL gamepads), SQLite pet state, Chicha visuals, audio, splash + health checks, settings, confirmations for quit/shutdown, and performance-minded rendering.
+**Phase 1** delivered a stable launcher: semantic input (keyboard + SDL gamepads), SQLite pet state, Chicha visuals, audio, splash + health checks, settings, quit/shutdown confirmations, and performance-minded rendering.
 
-**Phase 2 foundation** (current): code is split into **`src/services/input/`**, **`src/config/`** (multi-file JSON + loader), **`src/core/`** (timing, lifecycle), **`src/pet/mood.py`** / **`behavior.py`**, **`src/ui/transitions.py`** / **`widgets.py`**, without changing player-facing behavior.
+**Phase 2** focuses on **personality and polish** (not feature explosion): Chicha life states + strip timing, lightweight behavior edges, handheld menu feel (cursor lerp, intro fade), richer settings readouts, deterministic audio reactions, and split config. Architecture stays modular (`src/services/input/`, `src/config/`, `src/core/`, `src/pet/`, `src/ui/`).
 
 **Still out of scope:** RetroPie wiring, real network tools, GPIO, touchscreen, AI/chatbots, Electron/web stacks.
 
@@ -19,7 +19,7 @@ Phase 1 delivers a **stable launcher shell**: semantic input (keyboard + SDL gam
 | Input (SDL2) | `src/services/input/` | `actions`, `keyboard`, `joystick`, `state`, `debug`, `manager` |
 | Input compat | `src/services/input_service.py` | Re-exports `InputService` / `InputAction` |
 | Core helpers | `src/core/` | `timing`, `lifecycle`, `scene_manager`, `app_state` |
-| Pet | `src/pet/` | `state`, `animations` (Chicha poses), `mood`, `behavior` (placeholder) |
+| Pet | `src/pet/` | `state`, `animations` (poses + strips), `mood`, `behavior` (wake / confirm hooks) |
 | UI | `src/ui/` | `handheld_shell`, `screens`, `theme`, `debug_overlay`, `transitions`, `widgets` |
 | Audio | `src/services/audio.py` | Preloaded `Sound`s; `play_move` aliases `play_menu_move` |
 | Data | `src/storage/` | SQLite |
@@ -48,10 +48,12 @@ python main.py
 |------|------|
 | `config/app.json` | App name, resolution, FPS, paths, startup/shutdown, audio volume |
 | `config/input.json` | Deadzone, repeat cooldowns, axis indices, **PS4-style `mappings`** |
-| `config/pet.json` | Chicha timings + `clips` overrides (merged into runtime `chicha` dict) |
-| `config/ui.json` | Optional `performance` overrides (vsync, `ambient_mote_count`, `chicha_fast_scale`, `system_poll_sec`) |
+| `config/pet.json` | `default_fps`, `blink`, `wake_ack_chance`, sleep/nav timers, `clips` overrides |
+| `config/ui.json` | `performance` + **`transitions`** (`enabled`, `launcher_intro_fade_ms`) |
 
 Legacy single-file setups still work if you keep everything in `app.json` only; the loader merges optional files **on top** of defaults + `app.json`.
+
+**Input feel:** edit `config/input.json` (`deadzone`, `repeat_cooldown_ms`, `hat_repeat_ms`, `mappings`). **`input.debug`: true** logs throttled SDL events to stdout.
 
 ---
 
@@ -72,27 +74,43 @@ Set **`input.debug`: true** for throttled stdout logs while tuning.
 
 ## Chicha assets
 
-Under `assets/chicha/<mood>/` place **one primary PNG per mood** (e.g. `idle/chicha-idle.png`).  
-Optional `frame_*.png` strips are ignored when a non-`frame_` PNG exists.  
-Per-folder overrides: `config/pet.json` → `clips.<mood>.file` → filename inside that folder.
+```
+assets/chicha/
+├── idle/          # hero PNG and/or frame_00.png …
+├── happy/
+├── sleep/         # maps to “sleepy” life state
+├── curious/
+├── alert/
+├── gaming/
+├── low_battery/
+└── booting/
+```
 
-**Ambient behavior** (when clips load): random idle pauses, soft “blink” band on idle, **happy** briefly after menu navigation, **sleep** after `sleep_after_idle_ms` on the launcher (defaults in `pet.json`). Tune `nav_happy_ms` / `sleep_after_idle_ms`.
+- **Single hero PNG** (e.g. `idle/chicha-idle.png`): one frame; optional **random blink** (squish) on idle per `pet.json` → `blink`.
+- **Strip**: only **`frame_*.png`** files (sorted) → cycles at **`default_fps`** or `clips.<mood>.fps`.
+- If both hero and `frame_*` exist, the hero PNG wins (strip ignored).
+- **`config/pet.json`**: `clips.<mood>.file` picks an explicit filename; `blink` / `wake_ack_chance` tune idle feel.
+- If nothing loads: **vector placeholder** silhouette (cheap primitives).
+
+**Life states** (deterministic): booting at splash, happy on confirm + nav bursts, curious on rapid nav, sleepy after `sleep_after_idle_ms`, gaming after Retro placeholder, low battery from power readout, alert from DB mood keywords.
 
 ---
 
 ## Sounds (optional files)
 
-Under `assets/sounds/`:
+Under `assets/sounds/` (preloaded at startup; missing files are skipped):
 
-| Role | Preferred path |
-|------|------------------|
-| Menu move | `navigation/menu-change.mp3` (or `.wav`) |
-| Confirm | `actions/selected-item.mp3` / `confirm.wav` |
-| Back | `actions/back.wav` / `.mp3` |
-| Startup | `system/startup.mp3` / `.wav` |
-| Shutdown | `system/shutdown.mp3` / `.wav` |
+| Role | Paths tried (first match wins) |
+|------|--------------------------------|
+| Menu move | **`move.wav`**, then `navigation/menu-change.*`, … |
+| Confirm | **`confirm.wav`**, then `actions/selected-item.*`, … |
+| Back | **`back.wav`**, then `actions/back.*`, … |
+| Startup | **`startup.wav`**, then `system/startup.*`, … |
+| Shutdown | `system/shutdown.*`, `actions/shutdown.*`, … |
+| Warning | **`warning.wav`**, then `system/warning.*`, … |
+| Chicha react | **`chicha_react.wav`**, then `chicha/ack.*`, … |
 
-Missing files are skipped; the app does not crash.
+Missing files or a failed mixer init do **not** crash the app.
 
 ---
 
@@ -111,13 +129,15 @@ Missing files are skipped; the app does not crash.
 
 ---
 
-## Validate Phase 2 foundation (no hardware)
+## Validate Phase 2 (no hardware)
 
 ```bash
-python tools/validate_phase2_foundation.py
+python tools/validate_phase2.py
 ```
 
-Requires **`pip install -r requirements.txt`** (needs **pygame**). The script sets `SDL_VIDEODRIVER=dummy` before importing pygame-dependent code (safe on headless CI). Checks: config files exist, **`src.app` imports**, merged config loads, input module, SQLite init, asset dirs, pygame init + Chicha draw.
+Requires **`pip install -r requirements.txt`** (needs **pygame**). Sets `SDL_VIDEODRIVER=dummy` before importing pygame code. Checks: config files, **`src.app` import**, merged config, input, SQLite, **`AudioService.initialize()`**, Chicha draw + vector fallback, asset folders.
+
+`tools/validate_phase2_foundation.py` delegates to the same checks (kept for older CI references).
 
 ---
 
@@ -133,6 +153,7 @@ bytedog-os/
 │   ├── pet.json
 │   └── ui.json
 ├── tools/
+│   ├── validate_phase2.py
 │   ├── validate_phase2_foundation.py
 │   └── gen_menu_icons.py
 ├── assets/
@@ -166,9 +187,9 @@ Main menu hero art: **`assets/images/chicha-deck-bg.png`**. Menu row icons: matc
 
 ---
 
-## Phase 2 foundation checklist
+## Phase 2 checklist
 
-- [ ] `python tools/validate_phase2_foundation.py` passes.
+- [ ] `python tools/validate_phase2.py` passes.
 - [ ] `python main.py`: splash, launcher, settings, quit confirm, **Apagar** confirm, shutdown.
 - [ ] F3 overlay shows FPS + joystick lines.
 - [ ] ~60 FPS on Pi 4 with defaults.
@@ -183,9 +204,9 @@ Main menu hero art: **`assets/images/chicha-deck-bg.png`**. Menu row icons: matc
 
 ---
 
-## What not to add yet
+## What not to add yet (save for Phase 3+)
 
-RetroPie as an integrated product, real offensive security tools, GPIO drivers, cloud AI, heavy UI frameworks.
+Integrated RetroPie as a full product, real offensive security tooling, GPIO/touch drivers, cloud AI, heavy UI frameworks, and replacing the semantic input model.
 
 ---
 

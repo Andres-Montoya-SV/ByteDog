@@ -1,4 +1,4 @@
-"""Settings panel: navigable rows, toggles, placeholders (Phase 2 polish)."""
+"""Settings panel: navigable rows, toggles, diagnostics (Phase 2 polish)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pygame
 from src.storage.ui_prefs import UiPreferences
 from src.ui.screens import wrap_text_to_width
 from src.ui.theme import Theme, load_ui_font
+from src.ui.widgets import draw_status_chip
 
 
 class SettingsRow(Enum):
@@ -30,6 +31,10 @@ class SettingsDisplayInfo:
     fps_target: int
     audio_ready: bool
     input_debug: bool
+    chicha_live_mood: str
+    chicha_clip: str
+    chicha_anim: str
+    phase2_line: str
 
 
 def draw_settings_screen(
@@ -82,7 +87,6 @@ def draw_settings_screen(
 
     pulse = 0.5 + 0.5 * math.sin(anim_phase_s * math.tau * 0.9)
 
-    # Keep rows strictly inside the panel; diagnostics/meta clip below with their own checks.
     panel_inner_bottom = panel.bottom - 8
     body_ls = body_font.get_linesize()
     small_ls = small.get_linesize()
@@ -93,6 +97,7 @@ def draw_settings_screen(
     n_rows = len(rows)
     row0_y = y
     available_for_rows = panel_inner_bottom - row0_y
+    row_gap = base_gap
     for gap_try in range(base_gap, 3, -1):
         if n_rows * (core_h + gap_try) <= available_for_rows:
             row_gap = gap_try
@@ -101,7 +106,6 @@ def draw_settings_screen(
         row_gap = 4
 
     for row_id, label, value in rows:
-        # Full row includes highlight pad extending `pad_top_slack` above the label.
         row_bottom = y + core_h + row_gap
         pad_bottom = y - pad_top_slack + pad_h
         if max(row_bottom, pad_bottom) > panel_inner_bottom:
@@ -154,3 +158,25 @@ def draw_settings_screen(
             break
         surface.blit(small.render(part, True, theme.text_dim), (x, y))
         y += small.get_linesize() + 2
+
+    y += 6
+    pet_line = f"Pet · {info.chicha_live_mood} · clip {info.chicha_clip} · {info.chicha_anim}"
+    for part in wrap_text_to_width(small, pet_line, max_text_w):
+        if y > panel.bottom - 10:
+            break
+        surface.blit(small.render(part, True, theme.text_dim), (x, y))
+        y += small.get_linesize() + 2
+
+    chip_y = min(panel_inner_bottom - 18, y + 8)
+    chip_gap = 8
+    tx = float(x + 48)
+    for text in (
+        "mixer OK" if info.audio_ready else "mixer off",
+        "input dbg" if info.input_debug else "input dbg off",
+        info.phase2_line[:28],
+    ):
+        w = float(small.size(text)[0] + 32)
+        if tx + w > panel.right - 24:
+            break
+        draw_status_chip(surface, theme, text, (int(tx + w / 2), chip_y), font_size=12)
+        tx += w + chip_gap

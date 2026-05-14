@@ -29,6 +29,14 @@ def _defaults() -> dict[str, Any]:
             "nav_happy_ms": 650.0,
             "low_battery_threshold_pct": 15,
             "reactive_to_navigation": True,
+            "default_fps": 6.0,
+            "wake_ack_chance": 0.12,
+            "blink": {
+                "enabled": True,
+                "idle_min_interval_ms": 3200.0,
+                "idle_max_interval_ms": 9000.0,
+                "blink_duration_ms": 120.0,
+            },
             "clip_names": (
                 "idle",
                 "sleep",

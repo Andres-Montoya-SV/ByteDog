@@ -52,3 +52,7 @@ class PetState:
     def mood_key(self) -> str:
         """Normalize mood for asset lookup."""
         return self.mood.strip().lower()
+
+    def summary_line(self) -> str:
+        """Short status for settings / debug (SQLite fields)."""
+        return f"{self.name} · Lv.{self.level} · mood {self.mood_key()}"
