@@ -1,0 +1,57 @@
+{
+  "window": {
+    "width": 800,
+    "height": 480,
+    "fullscreen": false,
+    "title": "ByteDog OS"
+  },
+  "fps": 60,
+  "paths": {
+    "assets": "assets",
+    "data": "data"
+  },
+  "chicha": {
+    "default_fps": 8,
+    "sleep_after_idle_ms": 120000,
+    "nav_happy_ms": 650,
+    "clips": {
+      "idle": { "fps": 8 },
+      "happy": { "fps": 10 },
+      "sleep": { "fps": 6 },
+      "alert": { "fps": 12 }
+    }
+  },
+  "performance": {
+    "display_vsync": true,
+    "chicha_fast_scale": false,
+    "system_poll_sec": 1.0
+  },
+  "startup": {
+    "show_splash": true,
+    "minimum_splash_ms": 1500,
+    "fail_on_critical": true
+  },
+  "shutdown": {
+    "minimum_display_ms": 2800
+  },
+  "input": {
+    "debug": false,
+    "deadzone": 0.55,
+    "stick_center_deadzone": 0.12,
+    "repeat_cooldown_ms": 180,
+    "hat_repeat_ms": 140,
+    "left_stick_horizontal_axis": 0,
+    "left_stick_vertical_axis": 1,
+    "dpad_horizontal_axis": -1,
+    "dpad_vertical_axis": -1,
+    "mappings": {
+      "confirm_buttons": [0],
+      "back_buttons": [1],
+      "exit_buttons": [],
+      "menu_up_buttons": [11],
+      "menu_down_buttons": [12],
+      "menu_left_buttons": [13],
+      "menu_right_buttons": [14]
+    }
+  }
+}

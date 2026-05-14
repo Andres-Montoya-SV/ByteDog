@@ -1,0 +1,14 @@
+__MACOSX/
+__pycache__/
+*.pyc
+*.pyo
+*.py[cod]
+.Python
+data/*.db
+*.db-journal
+.DS_Store
+.venv/
+.cache/
+*.log
+*.egg-info/
+dist/
