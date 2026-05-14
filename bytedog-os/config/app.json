@@ -14,22 +14,34 @@
     "default_fps": 8,
     "sleep_after_idle_ms": 120000,
     "nav_happy_ms": 650,
+    "clip_blend_ms": 160,
+    "low_battery_threshold_pct": 15,
+    "reactive_to_navigation": true,
     "clips": {
       "idle": { "fps": 8 },
       "happy": { "fps": 10 },
       "sleep": { "fps": 6 },
-      "alert": { "fps": 12 }
+      "alert": { "fps": 12 },
+      "booting": { "fps": 10 },
+      "curious": { "fps": 9 },
+      "gaming": { "fps": 11 },
+      "low_battery": { "fps": 7 }
     }
+  },
+  "audio": {
+    "master_volume": 1.0
   },
   "performance": {
     "display_vsync": true,
     "chicha_fast_scale": false,
-    "system_poll_sec": 1.0
+    "system_poll_sec": 1.0,
+    "ambient_mote_count": 10
   },
   "startup": {
     "show_splash": true,
     "minimum_splash_ms": 1500,
-    "fail_on_critical": true
+    "fail_on_critical": true,
+    "startup_sound_sync_ms": 520
   },
   "shutdown": {
     "minimum_display_ms": 2800
@@ -39,6 +51,9 @@
     "deadzone": 0.55,
     "stick_center_deadzone": 0.12,
     "repeat_cooldown_ms": 180,
+    "repeat_cooldown_min_ms": 92,
+    "repeat_accel_step_ms": 16,
+    "stick_smooth_alpha": 0.22,
     "hat_repeat_ms": 140,
     "left_stick_horizontal_axis": 0,
     "left_stick_vertical_axis": 1,

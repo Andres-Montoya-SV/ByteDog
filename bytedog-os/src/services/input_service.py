@@ -125,6 +125,8 @@ class JoystickAdapter:
         self._threshold = float(cfg.get("deadzone", 0.55))
         self._center = float(cfg.get("stick_center_deadzone", 0.12))
         self._repeat_ms = float(cfg.get("repeat_cooldown_ms", 180.0))
+        self._repeat_min_ms = float(cfg.get("repeat_cooldown_min_ms", 92.0))
+        self._repeat_accel_step_ms = float(cfg.get("repeat_accel_step_ms", 16.0))
         self._hat_repeat_ms = float(cfg.get("hat_repeat_ms", self._repeat_ms))
         self._left_axis_h = int(cfg.get("left_stick_horizontal_axis", 0))
         self._left_axis_v = int(cfg.get("left_stick_vertical_axis", 1))
@@ -140,12 +142,20 @@ class JoystickAdapter:
         self._raw_button = "—"
         self._raw_hat = "—"
         self._last_normalized = "—"
+        self._smooth_alpha = float(cfg.get("stick_smooth_alpha", 0.0))
+        self._smooth_store: dict[tuple[int, int], float] = {}
+        self._burst_nav_count = 0
+        self._burst_decay_ms = 0.0
 
     def step_cooldowns(self, dt_ms: float) -> None:
         if self._nav_cooldown_ms > 0:
             self._nav_cooldown_ms = max(0.0, self._nav_cooldown_ms - dt_ms)
         if self._hat_cooldown_ms > 0:
             self._hat_cooldown_ms = max(0.0, self._hat_cooldown_ms - dt_ms)
+        if self._burst_decay_ms > 0:
+            self._burst_decay_ms = max(0.0, self._burst_decay_ms - dt_ms)
+            if self._burst_decay_ms <= 0.0:
+                self._burst_nav_count = 0
 
     def raw_debug_lines(self) -> list[str]:
         return [
@@ -159,7 +169,15 @@ class JoystickAdapter:
         self._last_normalized = action.name
 
     def _start_nav_cooldown(self) -> None:
-        self._nav_cooldown_ms = self._repeat_ms
+        self._nav_cooldown_ms = self._effective_repeat_ms()
+        self._burst_nav_count = min(24, self._burst_nav_count + 1)
+        self._burst_decay_ms = 420.0
+
+    def _effective_repeat_ms(self) -> float:
+        if self._burst_nav_count < 2:
+            return self._repeat_ms
+        extra = (self._burst_nav_count - 1) * self._repeat_accel_step_ms
+        return max(self._repeat_min_ms, self._repeat_ms - extra)
 
     def actions_from_hat(self, event: pygame.event.Event) -> Iterator[InputAction]:
         x, y = event.value
@@ -225,6 +243,16 @@ class JoystickAdapter:
             return 0.0
         return v
 
+    def _smooth_axis(self, joy_id: int, axis_index: int, raw: float) -> float:
+        if self._smooth_alpha <= 0.001:
+            return raw
+        key = (joy_id, axis_index)
+        prev = self._smooth_store.get(key, raw)
+        a = max(0.02, min(0.55, self._smooth_alpha))
+        blended = prev + a * (raw - prev)
+        self._smooth_store[key] = blended
+        return blended
+
     def _read_axis_pair(
         self, joy: pygame.joystick.Joystick, axis_h: int, axis_v: int
     ) -> tuple[float, float] | None:
@@ -234,8 +262,13 @@ class JoystickAdapter:
             n = joy.get_numaxes()
             if axis_h >= n or axis_v >= n:
                 return None
-            vx = self._apply_center(float(joy.get_axis(axis_h)))
-            vy = self._apply_center(float(joy.get_axis(axis_v)))
+            iid = 0
+            try:
+                iid = int(joy.get_instance_id())
+            except (pygame.error, AttributeError, TypeError):
+                pass
+            vx = self._apply_center(self._smooth_axis(iid, axis_h, float(joy.get_axis(axis_h))))
+            vy = self._apply_center(self._smooth_axis(iid, axis_v, float(joy.get_axis(axis_v))))
             return (vx, vy)
         except (pygame.error, AttributeError):
             return None

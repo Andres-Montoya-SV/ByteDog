@@ -9,6 +9,7 @@ from typing import Mapping
 
 import pygame
 
+from src.pet.chicha_life import ChichaLifeState
 from src.services.wifi import WifiStatus
 from src.ui.menu import LauncherMenu, MenuAction
 from src.ui.screens import wrap_text_to_width
@@ -113,14 +114,19 @@ def draw_handheld_launcher(
     battery_pct: int | None,
     *,
     deck_hero: pygame.Surface | None,
+    deck_hero_alpha: int = 255,
     selection_pulse_s: float = 0.0,
+    intro_slide_px: int = 0,
+    chicha_life: ChichaLifeState = ChichaLifeState.IDLE,
 ) -> None:
+    slide = max(-24, min(48, intro_slide_px))
+
     pygame.draw.rect(surface, theme.bg_panel, layout.card, border_radius=14)
     pygame.draw.rect(surface, theme.border, layout.card, width=2, border_radius=14)
 
     title_font = load_sans_ui_font(max(16, layout.top_bar.h - 10))
     menu_title = title_font.render("MENÚ PRINCIPAL", True, theme.accent_purple)
-    surface.blit(menu_title, (layout.top_bar.x, layout.top_bar.centery - menu_title.get_height() // 2))
+    surface.blit(menu_title, (layout.top_bar.x + slide, layout.top_bar.centery - menu_title.get_height() // 2))
 
     time_font = load_sans_ui_font(max(15, layout.top_bar.h - 12), bold=True)
     clock_s = datetime.now().strftime("%H:%M")
@@ -146,11 +152,12 @@ def draw_handheld_launcher(
     font_sub = load_sans_ui_font(sub_sz, bold=False)
 
     for i, item in enumerate(menu.items):
-        y = layout.menu_area.y + i * layout.row_height
+        y = layout.menu_area.y + i * layout.row_height + slide
+        x0 = layout.menu_area.x + slide
         if y + layout.row_height > layout.menu_area.bottom:
             break
         row_rect = pygame.Rect(
-            layout.menu_area.x,
+            x0,
             y,
             layout.menu_area.w,
             min(layout.row_height, layout.menu_area.bottom - y),
@@ -169,11 +176,18 @@ def draw_handheld_launcher(
                 pygame.Rect(row_rect.x, row_rect.y, 5, row_rect.h),
                 border_radius=2,
             )
+            caret = int(3 + 2 * math.sin(selection_pulse_s * math.tau * 1.2))
+            cr = pygame.Rect(row_rect.x + 10 + caret, row_rect.centery - 6, 10, 12)
+            pygame.draw.polygon(
+                surface,
+                theme.accent_orange,
+                [(cr.left, cr.centery), (cr.right, cr.top), (cr.right, cr.bottom)],
+            )
 
         icon = menu_icons.get(item.action)
         if icon is not None:
             iw, ih = icon.get_size()
-            ix = layout.menu_area.x + 8 + (layout.icon_size - iw) // 2
+            ix = x0 + 8 + (layout.icon_size - iw) // 2
             iy = row_rect.centery - ih // 2
             surface.blit(icon, (ix, iy))
 
@@ -185,7 +199,7 @@ def draw_handheld_launcher(
         )
         label_upper = item.label.upper()
         t1 = font_title.render(label_upper, True, title_color)
-        surface.blit(t1, (layout.text_left_x, row_rect.y + 6))
+        surface.blit(t1, (layout.text_left_x + slide, row_rect.y + 6))
         t2 = font_sub.render(item.subtitle, True, sub_color)
         max_sub_w = layout.menu_area.right - layout.text_left_x - 8
         if t2.get_width() > max_sub_w:
@@ -193,39 +207,68 @@ def draw_handheld_launcher(
             sy = row_rect.y + 6 + t1.get_height() + 2
             for sl in sub_lines[:2]:
                 s2 = font_sub.render(sl, True, sub_color)
-                surface.blit(s2, (layout.text_left_x, sy))
+                surface.blit(s2, (layout.text_left_x + slide, sy))
                 sy += font_sub.get_linesize()
         else:
-            surface.blit(t2, (layout.text_left_x, row_rect.y + 6 + t1.get_height() + 2))
+            surface.blit(t2, (layout.text_left_x + slide, row_rect.y + 6 + t1.get_height() + 2))
 
         if i < len(menu.items) - 1:
             sep_y = row_rect.bottom - 1
             pygame.draw.line(
                 surface,
                 pygame.Color(35, 30, 55),
-                (layout.text_left_x, sep_y),
-                (layout.menu_area.right - 6, sep_y),
+                (layout.text_left_x + slide, sep_y),
+                (layout.menu_area.right - 6 + slide, sep_y),
                 1,
             )
 
     inner = layout.chicha_rect.inflate(-10, -10)
-    if deck_hero is not None:
-        surface.blit(deck_hero, inner.topleft)
-    else:
+    if deck_hero is not None and deck_hero_alpha > 0:
+        if deck_hero_alpha >= 255:
+            surface.blit(deck_hero, inner.topleft)
+        else:
+            ghost = deck_hero.copy()
+            ghost.set_alpha(deck_hero_alpha)
+            surface.blit(ghost, inner.topleft)
+    elif deck_hero is None:
         pygame.draw.rect(surface, theme.bg_panel, inner, border_radius=10)
         pygame.draw.rect(surface, theme.border, inner, width=1, border_radius=10)
 
     pygame.draw.rect(surface, theme.bg_panel, layout.flavor, border_radius=8)
     pygame.draw.rect(surface, theme.border, layout.flavor, width=1, border_radius=8)
     flavor_font = load_sans_ui_font(max(14, layout.flavor.h // 2), bold=False)
-    msg = "Chicha te está esperando"
-    heart = flavor_font.render(" ♥", True, theme.accent_purple)
+    msg, heart_txt = _flavor_for_life(chicha_life)
+    heart = flavor_font.render(heart_txt, True, theme.accent_purple)
     fimg = flavor_font.render(msg, True, theme.text_dim)
     fx = layout.flavor.x + 14
     cy = layout.flavor.centery
     _draw_paw_mark(surface, fx + 10, cy, theme.accent_purple)
     surface.blit(fimg, (fx + 26, cy - fimg.get_height() // 2))
     surface.blit(heart, (fx + 26 + fimg.get_width(), cy - heart.get_height() // 2))
+
+
+def _flavor_for_life(state: ChichaLifeState) -> tuple[str, str]:
+    hearts = {
+        ChichaLifeState.IDLE: " ♥",
+        ChichaLifeState.HAPPY: " ✦",
+        ChichaLifeState.SLEEPY: " zZ",
+        ChichaLifeState.CURIOUS: " ?",
+        ChichaLifeState.ALERT: " !",
+        ChichaLifeState.LOW_BATTERY: " …",
+        ChichaLifeState.GAMING: " ▶",
+        ChichaLifeState.BOOTING: " ◎",
+    }
+    lines = {
+        ChichaLifeState.IDLE: "Chicha te está esperando",
+        ChichaLifeState.HAPPY: "Chicha se alegra contigo",
+        ChichaLifeState.SLEEPY: "Chicha sueña contigo el sistema",
+        ChichaLifeState.CURIOUS: "Chicha olfatea el menú",
+        ChichaLifeState.ALERT: "Chicha está atenta",
+        ChichaLifeState.LOW_BATTERY: "Chicha nota poca energía",
+        ChichaLifeState.GAMING: "Chicha lista para jugar",
+        ChichaLifeState.BOOTING: "Chicha arranca el deck",
+    }
+    return lines.get(state, lines[ChichaLifeState.IDLE]), hearts.get(state, " ♥")
 
 
 def _ellipsis_lines(font: pygame.font.Font, text: str, max_w: int) -> list[str]:

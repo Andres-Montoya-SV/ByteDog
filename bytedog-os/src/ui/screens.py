@@ -151,9 +151,11 @@ def measure_wrapped_status_bar(
     wrapped: list[str] = []
     for line in lines:
         wrapped.extend(wrap_text_to_width(font, line, max_w))
-    pad = 12
+    # Keep in sync with draw_status_bar_lines (top inset 6, same line step).
+    top_pad = 6
+    bottom_pad = 6
     line_step = font.get_linesize() + 1
-    height = pad + len(wrapped) * line_step
+    height = top_pad + len(wrapped) * line_step + bottom_pad
     return wrapped, height
 
 
@@ -254,5 +256,34 @@ def _break_long_token(font: pygame.font.Font, word: str, max_width: int) -> list
     return chunks
 
 
-def finalize_frame_effects(surface: pygame.Surface, scanlines: ScanlineOverlay) -> None:
+_vignette_key: tuple[int, int, int, int, int] | None = None
+_vignette_surf: pygame.Surface | None = None
+
+
+def blit_edge_vignette(surface: pygame.Surface, theme: Theme) -> None:
+    """Subtle corner darkening; cached per resolution (cheap multiply on composite)."""
+    global _vignette_key, _vignette_surf
+    w, h = surface.get_size()
+    key = (w, h, theme.bg.r, theme.bg.g, theme.bg.b)
+    if _vignette_surf is None or _vignette_key != key:
+        ov = pygame.Surface((w, h), pygame.SRCALPHA)
+        for i in range(0, max(w, h) // 2, 3):
+            a = max(0, 55 - i // 5)
+            if a <= 0:
+                break
+            pygame.draw.rect(
+                ov,
+                (theme.bg.r, theme.bg.g, theme.bg.b, min(90, a)),
+                pygame.Rect(i, i, w - 2 * i, h - 2 * i),
+                width=2,
+                border_radius=max(8, 24 - i // 4),
+            )
+        _vignette_surf = ov
+        _vignette_key = key
+    surface.blit(_vignette_surf, (0, 0))
+
+
+def finalize_frame_effects(surface: pygame.Surface, scanlines: ScanlineOverlay, theme: Theme | None = None) -> None:
+    if theme is not None:
+        blit_edge_vignette(surface, theme)
     scanlines.blit(surface)

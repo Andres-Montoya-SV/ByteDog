@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sys
 import time
 from collections.abc import Iterable
@@ -22,9 +23,11 @@ from src.services.input_service import InputAction, InputService
 from src.startup.health_checks import BootContext, run_all_checks
 from src.startup.splash import run_startup_splash
 from src.storage.database import ensure_database
+from src.storage.ui_prefs import load_ui_prefs, save_ui_prefs
 from src.ui.menu import LauncherMenu, MenuAction
 from src.ui.handheld_shell import compute_handheld_main_layout, draw_handheld_launcher
 from src.ui.icon_cache import MenuIconCache
+from src.ui.ambient_motes import AmbientMotes
 from src.ui.screens import (
     LayoutMetrics,
     compute_layout,
@@ -35,7 +38,7 @@ from src.ui.screens import (
     measure_wrapped_status_bar,
 )
 from src.ui.debug_overlay import draw_input_debug_overlay
-from src.ui.settings_screen import SettingsDisplayInfo, draw_settings_screen
+from src.ui.settings_screen import SettingsDisplayInfo, SettingsRow, draw_settings_screen
 from src.ui.shutdown_screen import draw_shutdown_screen
 from src.ui.theme import ScanlineOverlay, default_theme
 
@@ -54,22 +57,44 @@ def load_config(root: Path) -> dict[str, Any]:
             "default_fps": 8.0,
             "sleep_after_idle_ms": 120_000.0,
             "nav_happy_ms": 650.0,
+            "clip_blend_ms": 160.0,
+            "low_battery_threshold_pct": 15,
+            "reactive_to_navigation": True,
+            "clip_names": (
+                "idle",
+                "sleep",
+                "happy",
+                "alert",
+                "booting",
+                "curious",
+                "gaming",
+                "low_battery",
+            ),
             "clips": {
                 "idle": {"fps": 8.0},
                 "happy": {"fps": 10.0},
                 "sleep": {"fps": 6.0},
                 "alert": {"fps": 12.0},
+                "booting": {"fps": 10.0},
+                "curious": {"fps": 9.0},
+                "gaming": {"fps": 11.0},
+                "low_battery": {"fps": 7.0},
             },
+        },
+        "audio": {
+            "master_volume": 1.0,
         },
         "performance": {
             "display_vsync": True,
             "chicha_fast_scale": False,
             "system_poll_sec": 1.0,
+            "ambient_mote_count": 10,
         },
         "startup": {
             "show_splash": True,
             "minimum_splash_ms": 1500,
             "fail_on_critical": True,
+            "startup_sound_sync_ms": 520.0,
         },
         "shutdown": {
             "minimum_display_ms": 2800,
@@ -79,6 +104,9 @@ def load_config(root: Path) -> dict[str, Any]:
             "deadzone": 0.55,
             "stick_center_deadzone": 0.12,
             "repeat_cooldown_ms": 180.0,
+            "repeat_cooldown_min_ms": 92.0,
+            "repeat_accel_step_ms": 16.0,
+            "stick_smooth_alpha": 0.22,
             "hat_repeat_ms": 140.0,
             "left_stick_horizontal_axis": 0,
             "left_stick_vertical_axis": 1,
@@ -114,6 +142,8 @@ def load_config(root: Path) -> dict[str, Any]:
                     base_clips.update(user_clips)
                     chicha_merged["clips"] = base_clips
                 merged["chicha"] = chicha_merged
+            if isinstance(data.get("audio"), dict):
+                merged["audio"] = dict(defaults.get("audio", {})) | data["audio"]
             if isinstance(data.get("performance"), dict):
                 merged["performance"] = defaults["performance"] | data["performance"]
             if isinstance(data.get("startup"), dict):
@@ -173,18 +203,27 @@ class ByteDogApp:
             self._assets / "sounds" / "navigation",
             self._assets / "sounds" / "system",
             self._assets / "sounds" / "actions",
+            self._assets / "sounds" / "chicha",
+            self._assets / "sounds" / "ambient",
             self._assets / "images",
             chicha_root,
             chicha_root / "idle",
             chicha_root / "happy",
             chicha_root / "sleep",
             chicha_root / "alert",
+            chicha_root / "booting",
+            chicha_root / "curious",
+            chicha_root / "gaming",
+            chicha_root / "low_battery",
             self._data,
         )
 
         self._db_path = self._data / "bytedog.db"
         ensure_database(self._db_path)
         self._pet = PetState.from_db_path(self._db_path)
+
+        self._prefs_path = self._data / "ui_prefs.json"
+        self._ui_prefs = load_ui_prefs(self._prefs_path)
 
         self._theme = default_theme()
         self._menu = LauncherMenu()
@@ -193,7 +232,13 @@ class ByteDogApp:
         self._chicha_animator = ChichaAnimator(self._chicha_visuals)
         self._chicha_animator.configure_ambient(self._chicha_cfg)
 
+        self._ambient_motes = AmbientMotes(count=int(self._performance.get("ambient_mote_count", 10)))
+        self._settings_row = SettingsRow.SFX
+        self._gaming_until_mono = 0.0
+        self._launcher_entered_mono = 0.0
+        self._battery_warned = False
         self._overlay_message: Optional[str] = None
+        self._last_frame_dt_ms: float = 16.7
         self._clock = pygame.time.Clock()
         self._screen: Optional[pygame.Surface] = None
         self._scanlines = ScanlineOverlay()
@@ -233,15 +278,38 @@ class ByteDogApp:
         )
 
     def _open_settings(self) -> None:
+        self._settings_row = SettingsRow.SFX
         self._screen_mode = "settings"
 
     def _close_settings(self) -> None:
         self._screen_mode = "launcher"
 
+    def _save_prefs(self) -> None:
+        try:
+            save_ui_prefs(self._prefs_path, self._ui_prefs)
+        except OSError:
+            pass
+
+    def _maybe_low_battery_warning(self, batt: int | None) -> None:
+        if batt is None:
+            return
+        if batt <= 15 and not self._battery_warned:
+            self._battery_warned = True
+            self._audio.play_warning()
+        if batt >= 22:
+            self._battery_warned = False
+
+    def _maybe_nav_chicha_sound(self) -> None:
+        if not self._ui_prefs.chicha_reactive_nav:
+            return
+        if random.random() < 0.055:
+            self._audio.play_chicha_ack()
+
     def _set_overlay(self, message: str) -> None:
         self._overlay_message = message
 
     def _on_retro(self) -> None:
+        self._gaming_until_mono = time.monotonic() + 2.75
         self._set_overlay(emulator_service.launch_retro_menu())
 
     def _shutdown(self) -> None:
@@ -345,9 +413,25 @@ class ByteDogApp:
         )
         health = run_all_checks(ctx, mixer_ready=self._audio.mixer_ready)
 
+        try:
+            self._chicha_visuals = ChichaVisuals.load(self._assets / "chicha", self._chicha_cfg)
+            self._chicha_animator = ChichaAnimator(self._chicha_visuals)
+        except (pygame.error, OSError, ValueError) as exc:
+            print(f"[ByteDog] Chicha assets: {exc}", file=sys.stderr)
+        self._chicha_animator.configure_ambient(self._chicha_cfg)
+        self._chicha_animator.set_reactive_navigation(self._ui_prefs.chicha_reactive_nav)
+        self._chicha_animator.set_booting(True)
+
+        audio_cfg = self._config.get("audio") or {}
+        self._audio.set_master_volume(float(audio_cfg.get("master_volume", 1.0)))
+        self._audio.set_sfx_enabled(self._ui_prefs.sfx_enabled)
+        if self._ui_prefs.ambient_menu_enabled:
+            self._audio.start_ambient_menu()
+
         if bool(startup_cfg.get("show_splash", True)):
             min_ms = float(startup_cfg.get("minimum_splash_ms", 1500))
             fail_crit = bool(startup_cfg.get("fail_on_critical", True))
+            sync_ms = float(startup_cfg.get("startup_sound_sync_ms", 520.0))
             if not run_startup_splash(
                 self._screen,
                 self._theme,
@@ -356,27 +440,28 @@ class ByteDogApp:
                 fail_on_critical=fail_crit,
                 clock=self._clock,
                 target_fps=self._fps,
+                audio=self._audio,
+                chicha_animator=self._chicha_animator,
+                chicha_pet=self._pet,
+                chicha_fast_scale=bool(self._performance.get("chicha_fast_scale", False)),
+                sync_startup_sound_ms=sync_ms,
             ):
                 self._audio.shutdown()
                 pygame.quit()
                 return
 
-        self._audio.play_startup()
-
-        try:
-            self._chicha_visuals = ChichaVisuals.load(self._assets / "chicha", self._chicha_cfg)
-            self._chicha_animator = ChichaAnimator(self._chicha_visuals)
-        except (pygame.error, OSError, ValueError) as exc:
-            print(f"[ByteDog] Chicha assets: {exc}", file=sys.stderr)
-        self._chicha_animator.configure_ambient(self._chicha_cfg)
+        self._chicha_animator.set_booting(False)
 
         icon_px = max(36, min(44, self._height // 11))
         self._menu_icons = MenuIconCache(self._assets / "images", pixel_size=icon_px)
         self._menu_icons.preload(self._theme.accent_purple)
 
+        self._launcher_entered_mono = time.monotonic()
+
         running = True
         while running:
             dt_ms = float(self._clock.tick(self._fps))
+            self._last_frame_dt_ms = dt_ms
             self._fps_ema = 0.9 * self._fps_ema + 0.1 * (1000.0 / max(dt_ms, 0.001))
             self._input.step_cooldowns(dt_ms)
 
@@ -422,8 +507,12 @@ class ByteDogApp:
                 if not self._handle_intents(self._input.poll_navigation()):
                     running = False
 
-            if self._screen_mode not in ("launcher", "shutdown"):
+            if self._screen_mode != "shutdown":
+                batt = battery_service.read_battery_percent()
+                self._chicha_animator.set_battery_percent(batt)
+                self._chicha_animator.set_gaming_mode(time.monotonic() < self._gaming_until_mono)
                 self._chicha_animator.update(dt_ms, self._pet)
+                self._maybe_low_battery_warning(batt)
             self._render_frame()
             pygame.display.flip()
 
@@ -449,13 +538,43 @@ class ByteDogApp:
                 continue
 
             if self._screen_mode == "settings":
+                rows = list(SettingsRow)
                 if intent is InputAction.EXIT:
                     return False
                 if intent is InputAction.BACK:
                     self._audio.play_back()
                     self._chicha_animator.notify_activity()
+                    self._save_prefs()
                     self._close_settings()
                     continue
+                if intent is InputAction.MENU_UP:
+                    i = rows.index(self._settings_row)
+                    self._settings_row = rows[(i - 1) % len(rows)]
+                    self._audio.play_menu_move()
+                    self._chicha_animator.notify_menu_navigated()
+                elif intent is InputAction.MENU_DOWN:
+                    i = rows.index(self._settings_row)
+                    self._settings_row = rows[(i + 1) % len(rows)]
+                    self._audio.play_menu_move()
+                    self._chicha_animator.notify_menu_navigated()
+                elif intent is InputAction.CONFIRM:
+                    self._audio.play_confirm()
+                    row = self._settings_row
+                    if row is SettingsRow.SFX:
+                        self._ui_prefs.sfx_enabled = not self._ui_prefs.sfx_enabled
+                        self._audio.set_sfx_enabled(self._ui_prefs.sfx_enabled)
+                    elif row is SettingsRow.AMBIENT:
+                        self._ui_prefs.ambient_menu_enabled = not self._ui_prefs.ambient_menu_enabled
+                        if self._ui_prefs.ambient_menu_enabled:
+                            self._audio.start_ambient_menu()
+                        else:
+                            self._audio.stop_ambient_menu()
+                    elif row is SettingsRow.CHICHA_REACTIVE:
+                        self._ui_prefs.chicha_reactive_nav = not self._ui_prefs.chicha_reactive_nav
+                        self._chicha_animator.set_reactive_navigation(self._ui_prefs.chicha_reactive_nav)
+                    elif row is SettingsRow.BACK:
+                        self._save_prefs()
+                        self._close_settings()
                 continue
 
             if intent is InputAction.EXIT:
@@ -479,18 +598,22 @@ class ByteDogApp:
                 if self._menu.move_up():
                     self._audio.play_menu_move()
                     self._chicha_animator.notify_menu_navigated()
+                    self._maybe_nav_chicha_sound()
             elif intent is InputAction.MENU_DOWN:
                 if self._menu.move_down():
                     self._audio.play_menu_move()
                     self._chicha_animator.notify_menu_navigated()
+                    self._maybe_nav_chicha_sound()
             elif intent is InputAction.MENU_LEFT:
                 if self._menu.move_left():
                     self._audio.play_menu_move()
                     self._chicha_animator.notify_menu_navigated()
+                    self._maybe_nav_chicha_sound()
             elif intent is InputAction.MENU_RIGHT:
                 if self._menu.move_right():
                     self._audio.play_menu_move()
                     self._chicha_animator.notify_menu_navigated()
+                    self._maybe_nav_chicha_sound()
             elif intent is InputAction.CONFIRM:
                 self._audio.play_confirm()
                 self._chicha_animator.notify_activity()
@@ -569,7 +692,7 @@ class ByteDogApp:
         if self._overlay_message:
             draw_overlay_message(surface, self._theme, self._overlay_message, layout.menu_size)
 
-        finalize_frame_effects(surface, self._scanlines)
+        finalize_frame_effects(surface, self._scanlines, self._theme)
 
         if self._show_input_debug_overlay:
             lines = self._build_input_debug_overlay_lines()
@@ -586,12 +709,13 @@ class ByteDogApp:
 
         if self._screen_mode == "shutdown":
             draw_shutdown_screen(surface, self._theme, started_monotonic=self._shutdown_started_at)
-            finalize_frame_effects(surface, self._scanlines)
+            finalize_frame_effects(surface, self._scanlines, self._theme)
             return
 
         if self._screen_mode == "settings":
             status_prepared = self._prepare_status_bar(layout, sw, sh)
             _, status_rect, _ = status_prepared
+            fast_scale = bool(self._performance.get("chicha_fast_scale", False))
             draw_settings_screen(
                 surface,
                 self._theme,
@@ -603,8 +727,14 @@ class ByteDogApp:
                     audio_ready=self._audio.mixer_ready,
                     input_debug=self._input_debug,
                 ),
+                self._ui_prefs,
+                self._settings_row,
+                time.monotonic(),
                 content_bottom_y=status_rect.top,
             )
+            margin = max(20, min(sw, sh) // 28)
+            mini = pygame.Rect(sw - margin - 138, margin + 56, 118, 92)
+            self._chicha_animator.draw(surface, mini, fast_scale=fast_scale, now_s=time.monotonic())
             self._draw_status_overlay_scanlines_debug(
                 surface, layout, sw, sh, status_prepared=status_prepared
             )
@@ -616,6 +746,12 @@ class ByteDogApp:
         fast_scale = bool(self._performance.get("chicha_fast_scale", False))
         inner = hl.chicha_rect.inflate(-10, -10)
         deck_hero = self._scaled_deck_hero(inner.width, inner.height, fast_scale)
+        intro_elapsed = max(0.0, time.monotonic() - self._launcher_entered_mono)
+        intro_t = min(1.0, intro_elapsed / 0.42)
+        intro_ease = intro_t * intro_t * (3.0 - 2.0 * intro_t)
+        intro_slide = int((1.0 - intro_ease) * 36)
+        has_chicha = bool(self._chicha_visuals.clips)
+        deck_alpha = 105 if has_chicha else 255
         draw_handheld_launcher(
             surface,
             self._theme,
@@ -625,13 +761,21 @@ class ByteDogApp:
             wifi_service.get_wifi_status(),
             battery_service.read_battery_percent(),
             deck_hero=deck_hero,
+            deck_hero_alpha=deck_alpha,
             selection_pulse_s=time.monotonic(),
+            intro_slide_px=intro_slide,
+            chicha_life=self._chicha_animator.life_state,
         )
+
+        self._ambient_motes.resize(inner.w, inner.h)
+        self._ambient_motes.update(self._last_frame_dt_ms)
+        self._chicha_animator.draw(surface, inner, fast_scale=fast_scale, now_s=time.monotonic())
+        self._ambient_motes.draw(surface, inner, self._theme.accent_purple)
 
         if self._overlay_message:
             draw_overlay_message(surface, self._theme, self._overlay_message, layout.menu_size)
 
-        finalize_frame_effects(surface, self._scanlines)
+        finalize_frame_effects(surface, self._scanlines, self._theme)
 
         if self._show_input_debug_overlay:
             lines = self._build_input_debug_overlay_lines()
