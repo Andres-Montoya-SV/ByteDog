@@ -1,14 +1,32 @@
-# ByteDog OS — Phase 1
+# ByteDog OS — Phase 1 + Phase 2 foundation
 
 **ByteDog OS** is a **cyberpunk handheld launcher** for **Raspberry Pi 4** (and desktop dev), built with **Python** and **Pygame**. It is meant to feel like a **small console + hacker gadget**, not a Linux desktop or a generic emulator frontend. The mascot is **Chicha**, a dachshund.
 
-Phase 1 delivers a **stable, polished launcher shell**: input → semantic actions, SQLite pet state, Chicha animation (with fallbacks), audio, splash + health checks, settings, and performance-minded rendering.
+Phase 1 delivers a **stable launcher shell**: semantic input (keyboard + SDL gamepads), SQLite pet state, Chicha visuals, audio, splash + health checks, settings, confirmations for quit/shutdown, and performance-minded rendering.
 
-**Out of scope for Phase 1:** RetroPie wiring, real network tools, GPIO, touchscreen, AI/chatbots, heavy frameworks.
+**Phase 2 foundation** (current): code is split into **`src/services/input/`**, **`src/config/`** (multi-file JSON + loader), **`src/core/`** (timing, lifecycle), **`src/pet/mood.py`** / **`behavior.py`**, **`src/ui/transitions.py`** / **`widgets.py`**, without changing player-facing behavior.
+
+**Still out of scope:** RetroPie wiring, real network tools, GPIO, touchscreen, AI/chatbots, Electron/web stacks.
 
 ---
 
-## Quick start (clean machine)
+## Architecture (high level)
+
+| Area | Location | Notes |
+|------|----------|--------|
+| App orchestrator | `src/app.py` | Main loop, intents, render dispatch (smaller than pre-refactor) |
+| Config | `config/*.json` + `src/config/loader.py` | `app.json` + optional `input.json`, `pet.json`, `ui.json` merged |
+| Input (SDL2) | `src/services/input/` | `actions`, `keyboard`, `joystick`, `state`, `debug`, `manager` |
+| Input compat | `src/services/input_service.py` | Re-exports `InputService` / `InputAction` |
+| Core helpers | `src/core/` | `timing`, `lifecycle`, `scene_manager`, `app_state` |
+| Pet | `src/pet/` | `state`, `animations` (Chicha poses), `mood`, `behavior` (placeholder) |
+| UI | `src/ui/` | `handheld_shell`, `screens`, `theme`, `debug_overlay`, `transitions`, `widgets` |
+| Audio | `src/services/audio.py` | Preloaded `Sound`s; `play_move` aliases `play_menu_move` |
+| Data | `src/storage/` | SQLite |
+
+---
+
+## Quick start
 
 ```bash
 cd bytedog-os
@@ -18,9 +36,22 @@ pip install -r requirements.txt
 python main.py
 ```
 
-- **`data/bytedog.db`** is created automatically on first run (see `.gitignore`; do not commit DBs).
-- **`assets/`** subfolders (`fonts`, `sounds`, `images`, `chicha/...`) are created at startup as needed.
-- On **Pi**, set `"window": { "fullscreen": true }` in `config/app.json` and consider `"chicha_fast_scale": true` under `performance` for extra FPS headroom.
+- **`data/bytedog.db`** is created on first run (see `.gitignore`).
+- **`assets/`** subfolders are ensured at startup.
+- On **Pi**, set `"window": { "fullscreen": true }` in `config/app.json` and tune `config/ui.json` → `performance.chicha_fast_scale` if needed.
+
+---
+
+## Configuration
+
+| File | Role |
+|------|------|
+| `config/app.json` | App name, resolution, FPS, paths, startup/shutdown, audio volume |
+| `config/input.json` | Deadzone, repeat cooldowns, axis indices, **PS4-style `mappings`** |
+| `config/pet.json` | Chicha timings + `clips` overrides (merged into runtime `chicha` dict) |
+| `config/ui.json` | Optional `performance` overrides (vsync, `ambient_mote_count`, `chicha_fast_scale`, `system_poll_sec`) |
+
+Legacy single-file setups still work if you keep everything in `app.json` only; the loader merges optional files **on top** of defaults + `app.json`.
 
 ---
 
@@ -28,14 +59,24 @@ python main.py
 
 | Action | Keyboard | PS4 (default SDL mapping) |
 |--------|----------|---------------------------|
-| Menu up / down / left / right | Arrow keys or **W A S D** | **D-pad** (hat or buttons 11–14) + **left stick** |
-| Confirm | **Enter** or **Space** | **Cross (X)** — button **0** |
+| Navigate | Arrows or **W A S D** | D-pad (hat / buttons **11–14**) + **left stick** |
+| Confirm | **Enter** / **Space** | **Cross** — button **0** |
 | Back | **Escape** | **Circle** — button **1** |
-| Debug overlay | **F3** | **F3** (keyboard) |
+| Debug overlay | **F3** | (keyboard) |
 
-Optional **`input.dpad_horizontal_axis` / `dpad_vertical_axis`** (≥ `0`) enable a **second axis pair** when the D-pad is reported as axes instead of a hat.
+Optional **`input.dpad_horizontal_axis` / `dpad_vertical_axis`** (≥ `0`) map a **second axis pair** when the D-pad is axes instead of a hat.
 
-Set **`"input": { "debug": true }`** for throttled axis/button logs on stdout (useful over SSH).
+Set **`input.debug`: true** for throttled stdout logs while tuning.
+
+---
+
+## Chicha assets
+
+Under `assets/chicha/<mood>/` place **one primary PNG per mood** (e.g. `idle/chicha-idle.png`).  
+Optional `frame_*.png` strips are ignored when a non-`frame_` PNG exists.  
+Per-folder overrides: `config/pet.json` → `clips.<mood>.file` → filename inside that folder.
+
+**Ambient behavior** (when clips load): random idle pauses, soft “blink” band on idle, **happy** briefly after menu navigation, **sleep** after `sleep_after_idle_ms` on the launcher (defaults in `pet.json`). Tune `nav_happy_ms` / `sleep_after_idle_ms`.
 
 ---
 
@@ -55,108 +96,96 @@ Missing files are skipped; the app does not crash.
 
 ---
 
-## Chicha sprites
-
-Folder layout:
-
-```
-assets/chicha/
-├── idle/frame_00.png  frame_01.png  …
-├── happy/
-├── sleep/
-└── alert/
-```
-
-- Frames: **`frame_*.png`** (sorted by number) or any **`*.png`** in the folder if no `frame_*` files.
-- Per-mood FPS: `config/app.json` → `chicha.clips.<mood>.fps` and `chicha.default_fps`.
-- **Ambient behavior** (when clips exist): random idle pauses, soft “blink” band on idle, **happy** clip briefly after **menu navigation**, **sleep** clip after **`sleep_after_idle_ms`** of launcher inactivity (default 120s). Tune with `chicha.nav_happy_ms` and `chicha.sleep_after_idle_ms`.
-- If nothing loads: **vector placeholder** dachshund is drawn.
-
-Regenerate simple **menu PNG icons** (optional):  
-`SDL_VIDEODRIVER=dummy python tools/gen_menu_icons.py`
-
-Main menu hero art: **`assets/images/chicha-deck-bg.png`**. Menu row icons: matching **`*.png`** names in `assets/images/` (see repo).
-
----
-
-## Configuration (`config/app.json`)
-
-| Block | Purpose |
-|-------|---------|
-| `window` | `width`, `height`, `fullscreen`, `title` |
-| `fps` | Main loop cap (e.g. 60) |
-| `paths` | `assets`, `data` (relative to project root) |
-| `chicha` | `default_fps`, `clips`, `sleep_after_idle_ms`, `nav_happy_ms` |
-| `performance` | `display_vsync`, `chicha_fast_scale`, `system_poll_sec` |
-| `startup` | Splash: `show_splash`, `minimum_splash_ms`, `fail_on_critical` |
-| `shutdown` | `minimum_display_ms` (hold after **Apagar**) |
-| `input` | `deadzone`, cooldowns, stick axes, optional D-pad axes, `mappings` (PS4: confirm **0**, back **1**, D-pad **11–14**) |
-
----
-
-## Debugging controllers (no terminal)
+## Debugging controllers
 
 1. Press **F3** for the on-screen overlay: FPS, joystick count, names, last semantic action, raw button/axis/hat, current menu selection.
-2. Enable **`input.debug`** for stdout traces while tuning mappings.
+2. Set **`input.debug`: true** in `config/input.json` for throttled stdout traces while tuning mappings.
 
 ---
 
 ## Benchmarking FPS on Raspberry Pi 4
 
-1. Run fullscreen at target resolution with `chicha_fast_scale` on/off and compare **F3 FPS** readout.
+1. Run fullscreen at target resolution with `chicha_fast_scale` on/off and compare the **F3** FPS readout.
 2. Keep **`system_poll_sec`** at `1.0` or higher to avoid extra `/proc` work.
-3. Prefer **cached** assets: avoid swapping large PNGs every frame; Chicha and menu icons scale with cached surfaces where applicable.
+3. Prefer cached assets: Chicha and menu art use cached scaled surfaces where applicable.
 
 ---
 
-## Project tree (source)
+## Validate Phase 2 foundation (no hardware)
+
+```bash
+python tools/validate_phase2_foundation.py
+```
+
+Requires **`pip install -r requirements.txt`** (needs **pygame**). The script sets `SDL_VIDEODRIVER=dummy` before importing pygame-dependent code (safe on headless CI). Checks: config files exist, **`src.app` imports**, merged config loads, input module, SQLite init, asset dirs, pygame init + Chicha draw.
+
+---
+
+## Project tree (source, simplified)
 
 ```
 bytedog-os/
-├── .gitignore
 ├── main.py
 ├── requirements.txt
-├── config/app.json
-├── tools/gen_menu_icons.py
-├── assets/               # sounds, images, chicha (created as needed)
-├── data/                 # bytedog.db at runtime (gitignored)
+├── config/
+│   ├── app.json
+│   ├── input.json
+│   ├── pet.json
+│   └── ui.json
+├── tools/
+│   ├── validate_phase2_foundation.py
+│   └── gen_menu_icons.py
+├── assets/
+├── data/
 └── src/
     ├── app.py
-    ├── pet/              # ChichaAnimator, PetState
-    ├── services/         # input, audio, wifi, battery, system, …
-    ├── startup/          # splash, health_checks
-    ├── storage/          # SQLite
-    └── ui/               # handheld shell, menu, settings, debug, …
+    ├── config/
+    ├── core/
+    ├── pet/
+    ├── services/
+    │   ├── input/          # modular input
+    │   ├── input_service.py  # compat re-exports
+    │   └── …
+    ├── startup/
+    ├── storage/
+    └── ui/
 ```
 
+Regenerate simple **menu PNG icons** (optional):  
+`SDL_VIDEODRIVER=dummy python tools/gen_menu_icons.py`
+
+Main menu hero art: **`assets/images/chicha-deck-bg.png`**. Menu row icons: matching **`*.png`** names in `assets/images/`.
+
 ---
 
-## Phase 1 completion checklist
+## Confirm no input regression (manual)
 
-Use this to sign off Phase 1 before Phase 2:
+1. Keyboard: menu wrap, Enter, Esc, F3 overlay.
+2. PS4: D-pad + stick navigation, Cross/Circle, hotplug USB.
+3. `input.debug` stdout: no axis spam flood; single semantic action per hat edge.
 
-- [ ] Clean venv + `pip install -r requirements.txt`; **`python main.py`** runs.
-- [ ] Splash + health rows; **FAIL** blocks when configured; **≥ 1.5 s** minimum splash.
+---
+
+## Phase 2 foundation checklist
+
+- [ ] `python tools/validate_phase2_foundation.py` passes.
+- [ ] `python main.py`: splash, launcher, settings, quit confirm, **Apagar** confirm, shutdown.
+- [ ] F3 overlay shows FPS + joystick lines.
+- [ ] ~60 FPS on Pi 4 with defaults.
+
+### Phase 1 regression smoke (still required)
+
 - [ ] Keyboard: arrows / WASD, Enter/Space, Esc, F3.
-- [ ] PS4: D-pad (hat and/or buttons), **left stick**, **X** confirm, **Circle** back.
-- [ ] No input spam: deadzone, edge detection, cooldowns.
-- [ ] Hotplug: connect/disconnect **no crash**, no joystick init loops.
-- [ ] Menu **circular** wrap; **F3** overlay; **Chicha** animates or **placeholder** if assets missing.
-- [ ] Audio safe when files missing; **startup** + optional **shutdown** flow.
-- [ ] SQLite auto-created; **`.gitignore`** keeps DB and caches out of git.
-- [ ] **~60 FPS** target on Pi 4 with sane defaults.
+- [ ] PS4: D-pad (hat and/or buttons), left stick, Cross confirm, Circle back.
+- [ ] Hotplug: connect/disconnect without crash or joystick init loops.
+- [ ] Menu circular wrap; Chicha draws or safe fallback if assets missing.
+- [ ] SQLite auto-created; `.gitignore` keeps DB out of git.
 
 ---
 
-## What not to add before Phase 2
+## What not to add yet
 
-- RetroPie / emulator backends as integrated products  
-- Real pentest / network tooling  
-- GPIO / touch drivers  
-- Cloud AI / chatbots  
-- Large UI frameworks  
-
-Phase 2 should **build on** this shell (emulators, GPIO, networking) **without** replacing the input/action model or the lightweight render path.
+RetroPie as an integrated product, real offensive security tools, GPIO drivers, cloud AI, heavy UI frameworks.
 
 ---
 

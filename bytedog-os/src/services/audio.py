@@ -169,6 +169,10 @@ class AudioService:
     def play_menu_move(self) -> None:
         self._play(self._navigation_menu_change)
 
+    def play_move(self) -> None:
+        """Alias for menu navigation SFX (Phase 2 naming)."""
+        self.play_menu_move()
+
     def play_confirm(self) -> None:
         self._play(self._action_confirm)
 

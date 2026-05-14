@@ -1,0 +1,23 @@
+{
+  "debug": false,
+  "deadzone": 0.55,
+  "stick_center_deadzone": 0.12,
+  "repeat_cooldown_ms": 180,
+  "repeat_cooldown_min_ms": 92,
+  "repeat_accel_step_ms": 16,
+  "stick_smooth_alpha": 0.22,
+  "hat_repeat_ms": 140,
+  "left_stick_horizontal_axis": 0,
+  "left_stick_vertical_axis": 1,
+  "dpad_horizontal_axis": -1,
+  "dpad_vertical_axis": -1,
+  "mappings": {
+    "confirm_buttons": [0],
+    "back_buttons": [1],
+    "exit_buttons": [],
+    "menu_up_buttons": [11],
+    "menu_down_buttons": [12],
+    "menu_left_buttons": [13],
+    "menu_right_buttons": [14]
+  }
+}

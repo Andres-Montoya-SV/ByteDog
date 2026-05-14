@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import random
 import sys
 import time
@@ -12,6 +11,9 @@ from typing import Any, Optional
 
 import pygame
 
+from src.config.loader import load_merged_config
+from src.core.lifecycle import quit_pygame_display, shutdown_mixer_if_any
+from src.core.timing import update_frame_timing
 from src.pet.animations import ChichaAnimator, ChichaVisuals, scale_surface
 from src.pet.state import PetState
 from src.services import battery as battery_service
@@ -19,7 +21,7 @@ from src.services import emulator as emulator_service
 from src.services import system as system_service
 from src.services import wifi as wifi_service
 from src.services.audio import AudioService
-from src.services.input_service import InputAction, InputService
+from src.services.input import InputAction, InputService
 from src.startup.health_checks import BootContext, run_all_checks
 from src.startup.splash import run_startup_splash
 from src.storage.database import ensure_database
@@ -39,7 +41,11 @@ from src.ui.screens import (
     finalize_frame_effects,
     measure_wrapped_status_bar,
 )
-from src.ui.debug_overlay import draw_input_debug_overlay
+from src.ui.debug_overlay import (
+    InputDebugSnapshot,
+    build_input_debug_overlay_lines,
+    draw_input_debug_overlay,
+)
 from src.ui.settings_screen import SettingsDisplayInfo, SettingsRow, draw_settings_screen
 from src.ui.shutdown_screen import draw_shutdown_screen
 from src.ui.theme import ScanlineOverlay, default_theme
@@ -47,122 +53,6 @@ from src.ui.theme import ScanlineOverlay, default_theme
 
 def project_root() -> Path:
     return Path(__file__).resolve().parent.parent
-
-
-def load_config(root: Path) -> dict[str, Any]:
-    cfg_path = root / "config" / "app.json"
-    defaults: dict[str, Any] = {
-        "window": {"width": 800, "height": 480, "fullscreen": False, "title": "ByteDog OS"},
-        "fps": 60,
-        "paths": {"assets": "assets", "data": "data"},
-        "chicha": {
-            "sleep_after_idle_ms": 120_000.0,
-            "nav_happy_ms": 650.0,
-            "low_battery_threshold_pct": 15,
-            "reactive_to_navigation": True,
-            "clip_names": (
-                "idle",
-                "sleep",
-                "happy",
-                "alert",
-                "booting",
-                "curious",
-                "gaming",
-                "low_battery",
-            ),
-            "clips": {},
-        },
-        "audio": {
-            "master_volume": 1.0,
-        },
-        "performance": {
-            "display_vsync": True,
-            "chicha_fast_scale": False,
-            "system_poll_sec": 1.0,
-            "ambient_mote_count": 10,
-        },
-        "startup": {
-            "show_splash": True,
-            "minimum_splash_ms": 1500,
-            "fail_on_critical": True,
-            "startup_sound_sync_ms": 520.0,
-        },
-        "shutdown": {
-            "minimum_display_ms": 2800,
-        },
-        "input": {
-            "debug": False,
-            "deadzone": 0.55,
-            "stick_center_deadzone": 0.12,
-            "repeat_cooldown_ms": 180.0,
-            "repeat_cooldown_min_ms": 92.0,
-            "repeat_accel_step_ms": 16.0,
-            "stick_smooth_alpha": 0.22,
-            "hat_repeat_ms": 140.0,
-            "left_stick_horizontal_axis": 0,
-            "left_stick_vertical_axis": 1,
-            "dpad_horizontal_axis": -1,
-            "dpad_vertical_axis": -1,
-            "mappings": {
-                "confirm_buttons": [0],
-                "back_buttons": [1],
-                "exit_buttons": [],
-                "menu_up_buttons": [11],
-                "menu_down_buttons": [12],
-                "menu_left_buttons": [13],
-                "menu_right_buttons": [14],
-            },
-        },
-    }
-    try:
-        with cfg_path.open(encoding="utf-8") as handle:
-            data = json.load(handle)
-            if not isinstance(data, dict):
-                raise ValueError("config root must be an object")
-            merged = defaults | data
-            if isinstance(data.get("window"), dict):
-                merged["window"] = defaults["window"] | data["window"]
-            if isinstance(data.get("paths"), dict):
-                merged["paths"] = defaults["paths"] | data["paths"]
-            if isinstance(data.get("chicha"), dict):
-                chicha_merged = dict(defaults["chicha"])
-                chicha_merged.update(data["chicha"])
-                user_clips = data["chicha"].get("clips")
-                if isinstance(user_clips, dict):
-                    base_clips = dict(defaults["chicha"]["clips"])
-                    base_clips.update(user_clips)
-                    chicha_merged["clips"] = base_clips
-                merged["chicha"] = chicha_merged
-            if isinstance(data.get("audio"), dict):
-                merged["audio"] = dict(defaults.get("audio", {})) | data["audio"]
-            if isinstance(data.get("performance"), dict):
-                merged["performance"] = defaults["performance"] | data["performance"]
-            if isinstance(data.get("startup"), dict):
-                merged["startup"] = defaults["startup"] | data["startup"]
-            if isinstance(data.get("shutdown"), dict):
-                merged["shutdown"] = defaults["shutdown"] | data["shutdown"]
-            if isinstance(data.get("input"), dict):
-                im = dict(defaults["input"])
-                im.update(data["input"])
-                um = data["input"].get("mappings")
-                if isinstance(um, dict):
-                    base_m = dict(defaults["input"]["mappings"])
-                    base_m.update(um)
-                    for mk, mv in list(base_m.items()):
-                        if isinstance(mv, list):
-                            base_m[mk] = [int(x) for x in mv]
-                    im["mappings"] = base_m
-                merged["input"] = im
-                for axis_key in ("dpad_horizontal_axis", "dpad_vertical_axis"):
-                    if axis_key in im:
-                        try:
-                            merged["input"][axis_key] = int(im[axis_key])
-                        except (TypeError, ValueError):
-                            pass
-            return merged
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        print(f"[ByteDog] Using defaults (config issue: {exc})", file=sys.stderr)
-        return defaults
 
 
 def ensure_runtime_dirs(*paths: Path) -> None:
@@ -440,8 +330,8 @@ class ByteDogApp:
                 chicha_fast_scale=bool(self._performance.get("chicha_fast_scale", False)),
                 sync_startup_sound_ms=sync_ms,
             ):
-                self._audio.shutdown()
-                pygame.quit()
+                shutdown_mixer_if_any(self._audio)
+                quit_pygame_display()
                 return
 
         self._chicha_animator.set_booting(False)
@@ -454,9 +344,8 @@ class ByteDogApp:
 
         running = True
         while running:
-            dt_ms = float(self._clock.tick(self._fps))
+            dt_ms, self._fps_ema = update_frame_timing(self._clock, self._fps, self._fps_ema)
             self._last_frame_dt_ms = dt_ms
-            self._fps_ema = 0.9 * self._fps_ema + 0.1 * (1000.0 / max(dt_ms, 0.001))
             self._input.step_cooldowns(dt_ms)
 
             for event in pygame.event.get():
@@ -520,8 +409,8 @@ class ByteDogApp:
                 if (time.monotonic() - self._shutdown_started_at) * 1000.0 >= self._shutdown_wait_ms:
                     running = False
 
-        self._audio.shutdown()
-        pygame.quit()
+        shutdown_mixer_if_any(self._audio)
+        quit_pygame_display()
 
     def _dispatch_input(self, event: pygame.event.Event) -> bool:
         """Return False to stop the main loop."""
@@ -862,16 +751,10 @@ class ByteDogApp:
             draw_input_debug_overlay(surface, self._theme, lines, font_size=max(13, layout.stat_size - 2))
 
     def _build_input_debug_overlay_lines(self) -> list[str]:
-        lines = [
-            f"FPS ~{self._fps_ema:.0f}",
-            f"joysticks: {len(self._joysticks)}",
-        ]
-        if not self._joysticks:
-            lines.append("names: (none)")
-            lines.append("axes: —")
-        else:
-            names = ", ".join(j.get_name() for j in self._joysticks.values())
-            lines.append(f"names: {names[:70]}")
+        names = ""
+        axes_summary = "—"
+        if self._joysticks:
+            names = ", ".join(j.get_name() for j in self._joysticks.values())[:70]
             axis_parts: list[str] = []
             for iid, joy in self._joysticks.items():
                 try:
@@ -881,20 +764,26 @@ class ByteDogApp:
                     axis_parts.append(f"id{iid}:[{','.join(vals)}]")
                 except pygame.error:
                     axis_parts.append(f"id{iid}:?")
-            lines.append("axes: " + (" | ".join(axis_parts))[:100])
-        lines.append(f"menu selection: {self._menu.selected.label} (#{self._menu.selected_index})")
-        lines.append(f"last raw button: {self._debug_last_button}")
-        lines.append(f"last raw axis (event): {self._debug_last_axis}")
-        lines.append(f"last raw hat (event): {self._debug_last_hat}")
-        lines.append(f"last semantic action: {self._debug_last_action}")
-        lines.extend(self._input.raw_input_debug_lines())
-        lines.append("F3 = toggle overlay | input.debug = terminal")
-        return lines
+            axes_summary = (" | ".join(axis_parts))[:100]
+        snap = InputDebugSnapshot(
+            fps_ema=self._fps_ema,
+            joystick_count=len(self._joysticks),
+            controller_names=names,
+            axes_summary=axes_summary,
+            menu_label=self._menu.selected.label,
+            menu_index=self._menu.selected_index,
+            last_raw_button=self._debug_last_button,
+            last_raw_axis=self._debug_last_axis,
+            last_raw_hat=self._debug_last_hat,
+            last_semantic_action=self._debug_last_action,
+            raw_input_lines=tuple(self._input.raw_input_debug_lines()),
+        )
+        return build_input_debug_overlay_lines(snap)
 
 
 def run_app() -> None:
     root = project_root()
-    config = load_config(root)
+    config = load_merged_config(root)
     ByteDogApp(root, config).run()
 
 
