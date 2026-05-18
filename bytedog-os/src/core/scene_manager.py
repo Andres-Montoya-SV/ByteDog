@@ -10,4 +10,6 @@ class SceneId(str, Enum):
 
     LAUNCHER = "launcher"
     SETTINGS = "settings"
+    WIFI_LAB = "wifi_lab"
+    TERMINAL = "terminal"
     SHUTDOWN = "shutdown"

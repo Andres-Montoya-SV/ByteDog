@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "red_team_mode": true,
+  "log_dir": "data/lab_logs",
+  "dangerous_actions_enabled": true,
+  "wifi_interface": "en0",
+  "monitor_interface": "en0",
+  "auto_monitor_mode": false,
+  "tool_paths": {
+    "aireplay_ng": "/opt/homebrew/sbin/aireplay-ng",
+    "airodump_ng": "/opt/homebrew/sbin/airodump-ng"
+  }
+}

@@ -50,6 +50,11 @@ from src.ui.debug_overlay import (
 )
 from src.ui.settings_screen import SettingsDisplayInfo, SettingsRow, draw_settings_screen
 from src.ui.shutdown_screen import draw_shutdown_screen
+from src.ui.wifi_lab_screen import draw_wifi_lab_screen
+from src.ui.terminal_screen import draw_terminal_screen
+from src.services.terminal_shell import EmbeddedTerminal
+from src.cyber import reports as cyber_reports
+from src.cyber.wifi_lab import RedTeamAction, WifiLabController, WifiLabPanel
 from src.ui.theme import ScanlineOverlay, default_theme
 from src.ui.transitions import BlackVeilCache, FadeTimer
 
@@ -160,15 +165,21 @@ class ByteDogApp:
         self._shutdown_wait_ms: int = 0
         self._quit_confirm_active: bool = False
         self._shutdown_confirm_active: bool = False
+        cyber_cfg = config.get("cyber_lab") or {}
+        self._cyber_lab_cfg: dict[str, Any] = cyber_cfg if isinstance(cyber_cfg, dict) else {}
+        self._wifi_lab = WifiLabController(root=self._root, cfg=self._cyber_lab_cfg)
+        self._wifi_lab_opened_mono = 0.0
+        self._terminal: EmbeddedTerminal | None = None
+        self._terminal_opened_mono = 0.0
         self._wire_menu()
 
     def _wire_menu(self) -> None:
         self._menu.bind_actions(
             {
                 MenuAction.RETRO_GAMES: self._on_retro,
-                MenuAction.CYBERDECK: lambda: self._set_overlay("Cyberdeck shell is not available in Phase 1."),
+                MenuAction.CYBERDECK: self._open_wifi_lab,
                 MenuAction.CHICHA: lambda: self._set_overlay("Chicha care screen is coming soon."),
-                MenuAction.TERMINAL: lambda: self._set_overlay("Terminal bridge is not wired in Phase 1."),
+                MenuAction.TERMINAL: self._open_terminal,
                 MenuAction.SETTINGS: self._open_settings,
                 MenuAction.SHUTDOWN: lambda: None,
             }
@@ -181,6 +192,60 @@ class ByteDogApp:
 
     def _close_settings(self) -> None:
         self._screen_mode = "launcher"
+
+    def _open_wifi_lab(self) -> None:
+        if not bool(self._cyber_lab_cfg.get("enabled", True)):
+            self._set_overlay("WiFi Lab is disabled in config/cyber_lab.json.")
+            return
+        self._wifi_lab = WifiLabController(root=self._root, cfg=self._cyber_lab_cfg)
+        self._wifi_lab.enter_panel(WifiLabPanel.HOME)
+        self._wifi_lab_opened_mono = time.monotonic()
+        self._screen_mode = "wifi_lab"
+        cyber_reports.ensure_log_dir(self._wifi_lab.log_dir)
+
+    def _close_wifi_lab(self) -> None:
+        self._chicha_animator.set_external_life_state(None)
+        self._screen_mode = "launcher"
+
+    def _open_terminal(self) -> None:
+        self._close_terminal()
+        self._terminal = EmbeddedTerminal.start(self._root)
+        self._terminal_opened_mono = time.monotonic()
+        self._screen_mode = "terminal"
+        try:
+            pygame.key.start_text_input()
+        except pygame.error:
+            pass
+
+    def _close_terminal(self) -> None:
+        if self._terminal is not None:
+            self._terminal.close()
+            self._terminal = None
+        try:
+            pygame.key.stop_text_input()
+        except pygame.error:
+            pass
+        if self._screen_mode == "terminal":
+            self._screen_mode = "launcher"
+
+    def _handle_terminal_keydown(self, event: pygame.event.Event) -> bool:
+        if self._terminal is None:
+            return False
+        key = event.key
+        mod = int(getattr(event, "mod", 0))
+        if key == pygame.K_ESCAPE:
+            self._audio.play_back()
+            self._close_terminal()
+            return True
+        if key == pygame.K_PAGEUP:
+            self._terminal.scroll_page_up(12)
+            return True
+        if key == pygame.K_PAGEDOWN:
+            self._terminal.scroll_page_down(12)
+            return True
+        if self._terminal.send_key(key, mod=mod):
+            return True
+        return False
 
     def _save_prefs(self) -> None:
         try:
@@ -407,6 +472,13 @@ class ByteDogApp:
                     self._input.debug_log_event(event)
                 if event.type == pygame.JOYBUTTONDOWN:
                     self._debug_last_button = str(event.button)
+                if self._screen_mode == "terminal" and self._terminal is not None:
+                    if event.type == pygame.TEXTINPUT:
+                        self._terminal.send_text(event.text)
+                        continue
+                    if event.type == pygame.KEYDOWN:
+                        if self._handle_terminal_keydown(event):
+                            continue
                 if event.type in (
                     pygame.KEYDOWN,
                     pygame.JOYBUTTONDOWN,
@@ -422,6 +494,15 @@ class ByteDogApp:
                     running = False
 
             if self._screen_mode != "shutdown":
+                if self._screen_mode == "wifi_lab":
+                    self._wifi_lab.tick(dt_ms)
+                    self._chicha_animator.set_external_life_state(
+                        self._wifi_lab.chicha_life_override()
+                    )
+                elif self._screen_mode == "terminal" and self._terminal is not None:
+                    self._terminal.poll()
+                elif self._screen_mode == "launcher":
+                    self._chicha_animator.set_external_life_state(None)
                 batt = battery_service.read_battery_percent()
                 self._chicha_animator.set_battery_percent(batt)
                 self._chicha_animator.set_gaming_mode(time.monotonic() < self._gaming_until_mono)
@@ -435,6 +516,7 @@ class ByteDogApp:
                 if (time.monotonic() - self._shutdown_started_at) * 1000.0 >= self._shutdown_wait_ms:
                     running = False
 
+        self._close_terminal()
         shutdown_mixer_if_any(self._audio)
         quit_pygame_display()
 
@@ -536,6 +618,27 @@ class ByteDogApp:
                         self._close_settings()
                 continue
 
+            if self._screen_mode == "wifi_lab":
+                if self._handle_wifi_lab_intent(intent):
+                    continue
+
+            if self._screen_mode == "terminal":
+                if intent is InputAction.TOGGLE_DEBUG:
+                    continue
+                if intent in (InputAction.BACK, InputAction.EXIT):
+                    self._audio.play_back()
+                    self._close_terminal()
+                    continue
+                if intent is InputAction.MENU_UP:
+                    if self._terminal is not None:
+                        self._terminal.scroll_up(1)
+                    continue
+                if intent is InputAction.MENU_DOWN:
+                    if self._terminal is not None:
+                        self._terminal.scroll_down(1)
+                    continue
+                continue
+
             if intent is InputAction.EXIT:
                 self._shutdown_confirm_active = False
                 self._quit_confirm_active = True
@@ -590,6 +693,123 @@ class ByteDogApp:
                 else:
                     self._menu.activate()
         return True
+
+    def _handle_wifi_lab_intent(self, intent: InputAction) -> bool:
+        """Return True if intent was consumed."""
+        lab = self._wifi_lab
+        if intent is InputAction.EXIT:
+            self._shutdown_confirm_active = False
+            self._quit_confirm_active = True
+            return True
+        if intent is InputAction.BACK:
+            self._audio.play_back()
+            self._chicha_animator.notify_activity()
+            if lab.panel is WifiLabPanel.HOME:
+                self._close_wifi_lab()
+            elif lab.panel is WifiLabPanel.RED_WARNING:
+                lab.enter_panel(WifiLabPanel.HOME)
+            else:
+                lab.enter_panel(WifiLabPanel.HOME)
+            return True
+        if intent is InputAction.MENU_UP:
+            self._wifi_lab_nav(-1)
+            self._audio.play_menu_move()
+            return True
+        if intent is InputAction.MENU_DOWN:
+            self._wifi_lab_nav(1)
+            self._audio.play_menu_move()
+            return True
+        if intent in (InputAction.MENU_LEFT, InputAction.MENU_RIGHT):
+            if lab.panel is WifiLabPanel.RED_TEAM and lab.networks:
+                step = -1 if intent is InputAction.MENU_LEFT else 1
+                lab.red_target_index = (lab.red_target_index + step) % len(lab.networks)
+                self._audio.play_menu_move()
+                return True
+            if lab.panel is WifiLabPanel.LAB and lab.networks and not lab.lab_focus_scan:
+                step = -1 if intent is InputAction.MENU_LEFT else 1
+                lab.lab_network_index = (lab.lab_network_index + step) % len(lab.networks)
+                self._audio.play_menu_move()
+                return True
+            return False
+        if intent is InputAction.CONFIRM:
+            self._audio.play_confirm()
+            self._chicha_behavior.on_confirm(self._chicha_animator)
+            self._wifi_lab_confirm()
+            return True
+        return False
+
+    def _wifi_lab_nav(self, delta: int) -> None:
+        lab = self._wifi_lab
+        if lab.panel is WifiLabPanel.HOME:
+            n = len(lab.home_items())
+            lab.home_index = (lab.home_index + delta) % max(1, n)
+        elif lab.panel is WifiLabPanel.LAB:
+            if not lab.networks:
+                lab.lab_focus_scan = True
+                return
+            if lab.lab_focus_scan and delta > 0:
+                lab.lab_focus_scan = False
+                lab.lab_network_index = 0
+            elif not lab.lab_focus_scan and lab.lab_network_index == 0 and delta < 0:
+                lab.lab_focus_scan = True
+            elif not lab.lab_focus_scan:
+                lab.lab_network_index = max(
+                    0, min(len(lab.networks) - 1, lab.lab_network_index + delta)
+                )
+        elif lab.panel is WifiLabPanel.RED_TEAM:
+            n = len(lab.red_team_actions())
+            lab.red_action_index = (lab.red_action_index + delta) % max(1, n)
+            if lab.networks:
+                lab.red_focus_scan = lab.red_action_index == 0
+        elif lab.panel is WifiLabPanel.REPORTS:
+            n = max(1, len(lab.reports))
+            lab.report_index = (lab.report_index + delta) % n
+
+    def _wifi_lab_confirm(self) -> None:
+        lab = self._wifi_lab
+        if lab.panel is WifiLabPanel.HOME:
+            label = lab.home_items()[lab.home_index]
+            if label == "Back to Cyberdeck":
+                self._close_wifi_lab()
+            elif label == "Lab Mode":
+                lab.enter_panel(WifiLabPanel.LAB)
+                lab.lab_focus_scan = True
+            elif label == "Red Team Mode":
+                lab.enter_panel(WifiLabPanel.RED_WARNING)
+            elif label == "Reports":
+                lab.enter_panel(WifiLabPanel.REPORTS)
+            elif label == "WPA/WPA2 Guide":
+                lab.enter_panel(WifiLabPanel.GUIDE)
+            return
+        if lab.panel is WifiLabPanel.LAB:
+            if lab.lab_focus_scan:
+                lab.start_passive_scan()
+            return
+        if lab.panel is WifiLabPanel.RED_WARNING:
+            if not lab.red_warning_ack:
+                lab.acknowledge_red_warning()
+            else:
+                lab.confirm_red_team()
+                lab.enter_panel(WifiLabPanel.RED_TEAM)
+            return
+        if lab.panel is WifiLabPanel.RED_TEAM:
+            actions = (
+                RedTeamAction.LIVE_SCAN,
+                RedTeamAction.DEAUTH,
+                RedTeamAction.ROAMING,
+                RedTeamAction.HANDSHAKE,
+                RedTeamAction.OFFENSIVE,
+                RedTeamAction.RUN_ALL,
+            )
+            idx = max(0, min(lab.red_action_index, len(actions) - 1))
+            act = actions[idx]
+            if act is RedTeamAction.LIVE_SCAN:
+                lab.start_red_team_live_scan()
+            else:
+                lab.run_red_team_action(act)
+            return
+        if lab.panel is WifiLabPanel.GUIDE:
+            lab.enter_panel(WifiLabPanel.HOME)
 
     def _controller_names_summary(self) -> str:
         parts: list[str] = []
@@ -728,6 +948,63 @@ class ByteDogApp:
             self._draw_status_overlay_scanlines_debug(
                 surface, layout, sw, sh, status_prepared=status_prepared
             )
+            if self._quit_confirm_active:
+                draw_quit_confirm_dialog(
+                    surface,
+                    self._theme,
+                    title_font_size=max(20, layout.menu_size),
+                    hint_font_size=max(15, layout.menu_size - 4),
+                )
+            return
+
+        if self._screen_mode == "wifi_lab":
+            fast_scale = bool(self._performance.get("chicha_fast_scale", False))
+            margin = max(16, min(sw, sh) // 30)
+            chicha_slot = pygame.Rect(
+                sw - margin - 128,
+                margin + 12,
+                120,
+                100,
+            )
+            draw_wifi_lab_screen(
+                surface,
+                self._theme,
+                self._wifi_lab,
+                anim_phase_s=max(0.0, time.monotonic() - self._wifi_lab_opened_mono),
+                content_bottom_y=sh - margin,
+                chicha_rect=chicha_slot,
+            )
+            inner = chicha_slot.inflate(-6, -6)
+            self._chicha_animator.draw(surface, inner, fast_scale=fast_scale, now_s=time.monotonic())
+            finalize_frame_effects(surface, self._scanlines, self._theme)
+            if self._show_input_debug_overlay:
+                lines = self._build_input_debug_overlay_lines()
+                draw_input_debug_overlay(
+                    surface, self._theme, lines, font_size=max(13, layout.stat_size - 2)
+                )
+            if self._quit_confirm_active:
+                draw_quit_confirm_dialog(
+                    surface,
+                    self._theme,
+                    title_font_size=max(20, layout.menu_size),
+                    hint_font_size=max(15, layout.menu_size - 4),
+                )
+            return
+
+        if self._screen_mode == "terminal" and self._terminal is not None:
+            draw_terminal_screen(
+                surface,
+                self._theme,
+                self._terminal,
+                cursor_phase_s=time.monotonic() - self._terminal_opened_mono,
+                content_bottom_y=sh - max(16, min(sw, sh) // 30),
+            )
+            finalize_frame_effects(surface, self._scanlines, self._theme)
+            if self._show_input_debug_overlay:
+                lines = self._build_input_debug_overlay_lines()
+                draw_input_debug_overlay(
+                    surface, self._theme, lines, font_size=max(13, layout.stat_size - 2)
+                )
             if self._quit_confirm_active:
                 draw_quit_confirm_dialog(
                     surface,

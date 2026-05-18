@@ -209,6 +209,7 @@ class ChichaAnimator:
         "_burst_times",
         "_curious_boost_ms",
         "_reactive_nav",
+        "_external_life",
         "_life_state",
         "_default_fps",
         "_blink_hold_ms",
@@ -239,6 +240,7 @@ class ChichaAnimator:
         self._burst_times: list[float] = []
         self._curious_boost_ms = 0.0
         self._reactive_nav = True
+        self._external_life: ChichaLifeState | None = None
         self._life_state = ChichaLifeState.IDLE
         self._default_fps = 6.0
         self._blink_hold_ms = 0.0
@@ -283,6 +285,10 @@ class ChichaAnimator:
     def set_reactive_navigation(self, enabled: bool) -> None:
         self._reactive_nav = bool(enabled)
 
+    def set_external_life_state(self, state: ChichaLifeState | None) -> None:
+        """Temporary override (e.g. WiFi Lab moods); cleared with ``None``."""
+        self._external_life = state
+
     @property
     def life_state(self) -> ChichaLifeState:
         return self._life_state
@@ -323,6 +329,8 @@ class ChichaAnimator:
             return ChichaLifeState.GAMING
         if self._battery_pct is not None and self._battery_pct <= self._low_battery_threshold:
             return ChichaLifeState.LOW_BATTERY
+        if self._external_life is not None:
+            return self._external_life
         if self._confirm_boost_ms > 0.0:
             return ChichaLifeState.HAPPY
         if self._reactive_nav and self._nav_boost_ms > 0.0:

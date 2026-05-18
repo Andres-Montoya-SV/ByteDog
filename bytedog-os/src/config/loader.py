@@ -87,6 +87,16 @@ def _defaults() -> dict[str, Any]:
             },
         },
         "ui": {},
+        "cyber_lab": {
+            "enabled": True,
+            "red_team_mode": True,
+            "log_dir": "data/lab_logs",
+            "dangerous_actions_enabled": True,
+            "wifi_interface": "wlan0",
+            "monitor_interface": "wlan0mon",
+            "auto_monitor_mode": True,
+            "tool_paths": {},
+        },
     }
 
 
@@ -176,5 +186,7 @@ def load_merged_config(root: Path) -> dict[str, Any]:
         merged["ui"] = _deep_merge(merged.get("ui") or {}, extra)
         if isinstance(extra.get("performance"), dict):
             merged["performance"] = _deep_merge(merged.get("performance") or {}, extra["performance"])
+    if extra := _load_json(cfg_dir / "cyber_lab.json"):
+        merged["cyber_lab"] = _deep_merge(merged.get("cyber_lab") or {}, extra)
 
     return merged
